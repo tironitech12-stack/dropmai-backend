@@ -1,0 +1,326 @@
+// Dropmai — multi-tenant dropshipping platform
+// PostgreSQL + Prisma. All seller-scoped rows carry storeId where applicable.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum StoreStatus {
+  DRAFT
+  ACTIVE
+  SUSPENDED
+}
+
+enum DomainVerificationStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum MarketplaceChannel {
+  MERCADO_LIVRE
+  SHOPEE
+  AMAZON
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCED
+  ERROR
+  PAUSED
+}
+
+enum OrderChannel {
+  STOREFRONT
+  MERCADO_LIVRE
+  SHOPEE
+  AMAZON
+  MANUAL
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String? // stub until Clerk / Auth.js
+  imageUrl      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  memberships   StoreMember[]
+  marketplaceAccounts MarketplaceAccount[]
+}
+
+/// OAuth / external identity placeholder (Clerk, Google, etc.)
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+  expiresAt         DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Store {
+  id          String      @id @default(cuid())
+  slug        String      @unique // subdomain: {slug}.dropmai.com.br
+  name        String
+  status      StoreStatus @default(DRAFT)
+  description String?
+  logoUrl     String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  members             StoreMember[]
+  customDomains       CustomDomain[]
+  storeProducts       StoreProduct[]
+  marketplaceAccounts MarketplaceAccount[]
+  orders              Order[]
+}
+
+model StoreMember {
+  id        String   @id @default(cuid())
+  storeId   String
+  userId    String
+  role      String   @default("OWNER") // OWNER | ADMIN | STAFF
+  createdAt DateTime @default(now())
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, userId])
+  @@index([userId])
+  @@index([storeId])
+}
+
+model CustomDomain {
+  id                 String                    @id @default(cuid())
+  storeId            String
+  domain             String                    @unique
+  isPrimary          Boolean                   @default(false)
+  verificationStatus DomainVerificationStatus  @default(PENDING)
+  verificationToken  String?
+  verifiedAt         DateTime?
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  code      String   @unique // e.g. "xnamai"
+  name      String
+  active    Boolean  @default(true)
+  apiBaseUrl String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+}
+
+model Product {
+  id               String   @id @default(cuid())
+  supplierId       String
+  externalId       String // mercos_id for Xnamai
+  sku              String?
+  title            String
+  description      String?
+  categoryExternalId String?
+  categoryName     String?
+  unit             String?
+  costPrice        Decimal  @default(0) @db.Decimal(18, 2) // supplier list/cost
+  minimumPrice     Decimal? @db.Decimal(18, 2)
+  stock            Decimal  @default(0) @db.Decimal(18, 4)
+  ncm              String?
+  imageUrls        String[] @default([])
+  imageHashes      String[] @default([])
+  active           Boolean  @default(true)
+  raw              Json?
+  sourceUpdatedAt  DateTime?
+  lastSyncedAt     DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  supplier      Supplier         @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  variants      ProductVariant[]
+  storeProducts StoreProduct[]
+
+  @@unique([supplierId, externalId])
+  @@index([sku])
+  @@index([title])
+  @@index([active])
+  @@index([supplierId, active])
+}
+
+model ProductVariant {
+  id              String   @id @default(cuid())
+  productId       String
+  externalId      String?
+  sku             String?
+  title           String?
+  attributes      Json?
+  costPrice       Decimal? @db.Decimal(18, 2)
+  stock           Decimal  @default(0) @db.Decimal(18, 4)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([sku])
+}
+
+/// Seller listing: canonical Product + store-specific price/publish flags
+model StoreProduct {
+  id              String   @id @default(cuid())
+  storeId         String
+  productId       String
+  titleOverride   String?
+  sellPrice       Decimal  @db.Decimal(18, 2)
+  markupPercent   Decimal? @db.Decimal(9, 4)
+  publishedOnSite Boolean  @default(false)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  store               Store                @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  product             Product              @relation(fields: [productId], references: [id], onDelete: Cascade)
+  marketplaceListings MarketplaceListing[]
+  orderItems          OrderItem[]
+
+  @@unique([storeId, productId])
+  @@index([storeId, publishedOnSite])
+  @@index([storeId, active])
+}
+
+model MarketplaceAccount {
+  id           String             @id @default(cuid())
+  storeId      String
+  userId       String?
+  channel      MarketplaceChannel
+  label        String?
+  externalUserId String?
+  accessToken  String? // encrypted placeholder — do not log
+  refreshToken String?
+  expiresAt    DateTime?
+  metadata     Json?
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  store    Store                @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  user     User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  listings MarketplaceListing[]
+
+  @@unique([storeId, channel, externalUserId])
+  @@index([storeId])
+  @@index([userId])
+}
+
+model MarketplaceListing {
+  id                    String             @id @default(cuid())
+  storeProductId        String
+  marketplaceAccountId  String
+  channel               MarketplaceChannel
+  externalListingId     String?
+  externalSku           String?
+  syncStatus            SyncStatus         @default(PENDING)
+  lastSyncAt            DateTime?
+  lastError             String?
+  metadata              Json?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  storeProduct       StoreProduct       @relation(fields: [storeProductId], references: [id], onDelete: Cascade)
+  marketplaceAccount MarketplaceAccount @relation(fields: [marketplaceAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([storeProductId, marketplaceAccountId])
+  @@index([channel, syncStatus])
+  @@index([marketplaceAccountId])
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  storeId         String
+  channel         OrderChannel @default(STOREFRONT)
+  status          OrderStatus  @default(PENDING)
+  externalOrderId String?
+  customerName    String?
+  customerEmail   String?
+  customerPhone   String?
+  shippingAddress Json?
+  currency        String       @default("BRL")
+  subtotal        Decimal      @db.Decimal(18, 2)
+  shippingTotal   Decimal      @default(0) @db.Decimal(18, 2)
+  discountTotal   Decimal      @default(0) @db.Decimal(18, 2)
+  total           Decimal      @db.Decimal(18, 2)
+  notes           String?
+  placedAt        DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  store Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  items OrderItem[]
+
+  @@index([storeId, placedAt])
+  @@index([storeId, status])
+  @@index([channel, externalOrderId])
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  storeProductId String?
+  title          String
+  sku            String?
+  quantity       Decimal @db.Decimal(18, 4)
+  unitPrice      Decimal @db.Decimal(18, 2)
+  total          Decimal @db.Decimal(18, 2)
+
+  order        Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  storeProduct StoreProduct? @relation(fields: [storeProductId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([storeProductId])
+}
+
+model CatalogSyncRun {
+  id           String     @id @default(cuid())
+  supplierCode String
+  status       SyncStatus @default(PENDING)
+  records      Int        @default(0)
+  error        String?
+  startedAt    DateTime   @default(now())
+  finishedAt   DateTime?
+
+  @@index([supplierCode, startedAt])
+}
