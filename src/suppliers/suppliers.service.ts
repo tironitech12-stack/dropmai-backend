@@ -366,12 +366,18 @@ export class SuppliersService {
       }));
 
     if (featured.length < 6) {
-      featured = [
-        ...featured,
-        ...pageItems
-          .filter(withCdn)
-          .filter((p) => !featured.some((f) => f.id === p.id)),
-      ].slice(0, 12);
+      const fillers = pageItems
+        .filter(withCdn)
+        .filter((p) => !featured.some((f) => f.id === p.id))
+        .map((p) => ({
+          ...p,
+          imageUrl: normalizeCatalogImageUrl(
+            p.imageUrl,
+            p.externalId || p.id,
+            { sku: p.sku, title: p.title },
+          ),
+        }));
+      featured = [...featured, ...fillers].slice(0, 12);
     }
 
     const missingCdn = pageItems.filter((p) => !withCdn(p)).length;
