@@ -12,12 +12,25 @@ const CDN_IMAGE_RE =
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-type CacheEntry = { url: string | null; at: number };
+type CacheEntry = { url: string | null; at: number; ver: number };
+
+/** Bump to invalidate wrong CDN associations from looser matchers. */
+const CACHE_VERSION = 4;
 
 const cache = new Map<string, CacheEntry>();
 const positiveTtlMs = 24 * 60 * 60 * 1000;
 const negativeTtlMs = 10 * 60 * 1000;
 const inFlight = new Map<string, Promise<string | null>>();
+
+export function invalidateStorefrontImageCache(productId?: string): void {
+  if (productId) {
+    cache.delete(String(productId));
+    inFlight.delete(String(productId));
+    return;
+  }
+  cache.clear();
+  inFlight.clear();
+}
 
 export type ImageResolveHint = {
   productId: string;
@@ -130,6 +143,9 @@ export function productCodesFromTitle(
     if (/^pr[eé]/i.test(code)) continue;
     // Skip pure measurements like 384mL / 5ml / 600ml
     if (/^\d+(ml|mm|cm|kg|g|w|v|a|mah)$/i.test(code)) continue;
+    // Skip weak tokens (V8, A8, R2) — too many false busca hits.
+    if (code.length < 4 && !/-/.test(code)) continue;
+    if (/^[A-Z]\d{1,2}$/i.test(code)) continue;
     out.push(code);
   }
   return [...new Set(out)];
@@ -189,17 +205,67 @@ function rowMatchesCode(row: unknown, codeNorm: string): boolean {
   );
 }
 
+function isInternalPrSku(sku: string | null | undefined): boolean {
+  return Boolean(sku && /^pr-/i.test(sku.trim()));
+}
+
 function searchQueries(hint: ImageResolveHint): string[] {
   const out: string[] = [];
-  const sku = hint.sku?.trim();
-  if (sku && !/^pr-/i.test(sku)) out.push(sku);
-  else if (sku) out.push(sku);
+  // Prefer title product codes (SJK-6685) over opaque PR-* / reused Mercos SKUs.
   for (const code of productCodesFromTitle(hint.title).slice(0, 3)) {
-    if (code.toLowerCase() !== sku?.toLowerCase()) out.push(code);
+    out.push(code);
   }
+  const sku = hint.sku?.trim();
+  // Never busca by PR-* — Mercos returns unrelated first pages.
+  if (sku && !isInternalPrSku(sku)) out.push(sku);
   return [...new Set(out.filter(Boolean))];
 }
 
+function colorTokens(title: string): string[] {
+  const t = title.toLowerCase();
+  const colors = [
+    'preto',
+    'branco',
+    'vermelho',
+    'azul',
+    'verde',
+    'rosa',
+    'amarelo',
+    'dourado',
+    'prata',
+    'cinza',
+  ];
+  return colors.filter((c) => t.includes(c));
+}
+
+function rowAgreesWithTitleHint(row: unknown, hint: ImageResolveHint): boolean {
+  const nome = rowNome(row);
+  if (!hint.title) return true;
+  const titleCodes = productCodesFromTitle(hint.title).map((c) =>
+    c.toLowerCase(),
+  );
+  // If the catalog title carries a product code, the B2B row MUST share it.
+  // (SKU 1.1.056.6A alone pointed at IMS-X54 karaoke while title was SJK-6685.)
+  if (titleCodes.length) {
+    if (!titleCodes.some((c) => rowMatchesCode(row, c))) return false;
+  }
+  const colors = colorTokens(hint.title);
+  if (colors.length) {
+    const n = nome.toLowerCase();
+    // Prefer same color when title specifies one; allow if row has no color word.
+    const rowColors = colorTokens(nome);
+    if (rowColors.length && !colors.some((c) => rowColors.includes(c))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Strict picker — NEVER returns an arbitrary first search hit.
+ * Order: Mercos produto_id → exact SKU/codigo (+ title-code agree) →
+ * title product-code equality → very strong title overlap with shared code.
+ */
 function pickBestFromList(
   list: unknown[],
   hint: ImageResolveHint,
@@ -214,18 +280,16 @@ function pickBestFromList(
   const fromExact = firstImageFromPayload(exact);
   if (fromExact) return fromExact;
 
-  if (hint.sku) {
+  if (hint.sku && !isInternalPrSku(hint.sku)) {
     const skuNorm = hint.sku.trim().toLowerCase();
     const bySku = list.find((row) => {
       if (!row || typeof row !== 'object') return false;
       const r = row as Record<string, unknown>;
       const codigo = String(r.codigo ?? '').toLowerCase();
-      const nome = rowNome(row).toLowerCase();
-      return (
-        codigo === skuNorm ||
-        codigo.split(/[\s/,]+/).includes(skuNorm) ||
-        nome.startsWith(skuNorm)
-      );
+      const codigoParts = codigo.split(/[\s/,]+/).filter(Boolean);
+      const skuEq = codigo === skuNorm || codigoParts.includes(skuNorm);
+      if (!skuEq) return false;
+      return rowAgreesWithTitleHint(row, hint);
     });
     const fromSku = firstImageFromPayload(bySku);
     if (fromSku) return fromSku;
@@ -233,17 +297,35 @@ function pickBestFromList(
 
   for (const code of productCodesFromTitle(hint.title)) {
     const codeNorm = code.toLowerCase();
-    const byCode = list.find((row) => rowMatchesCode(row, codeNorm));
-    const fromCode = firstImageFromPayload(byCode);
+    const candidates = list.filter(
+      (row) => rowMatchesCode(row, codeNorm) && rowAgreesWithTitleHint(row, hint),
+    );
+    // Prefer row whose nome starts with the code (canonical listing).
+    const preferred =
+      candidates.find((row) =>
+        rowNome(row).toLowerCase().startsWith(codeNorm),
+      ) ?? candidates[0];
+    const fromCode = firstImageFromPayload(preferred);
     if (fromCode) return fromCode;
   }
 
-  // Sibling / retitled SKU: high title overlap + has CDN image.
+  // Last resort ONLY when we have a real product code and the row shares it,
+  // plus very strong title overlap. Never attach a photo from bare keyword hits.
   if (hint.title) {
+    const titleCodes = productCodesFromTitle(hint.title).map((c) =>
+      c.toLowerCase(),
+    );
+    if (!titleCodes.length) return null;
     let best: { score: number; url: string } | null = null;
-    for (const row of list.slice(0, 40)) {
+    for (const row of list) {
+      if (!titleCodes.some((c) => rowMatchesCode(row, c))) continue;
+      if (!rowAgreesWithTitleHint(row, hint)) continue;
       const score = titleSimilarity(hint.title, rowNome(row));
-      if (score < 0.6) continue;
+      if (score < 0.85) continue;
+      const shared = significantTokens(hint.title).filter((t) =>
+        significantTokens(rowNome(row)).includes(t),
+      );
+      if (shared.length < 3) continue;
       const url = firstImageFromPayload(row);
       if (!url) continue;
       if (!best || score > best.score) best = { score, url };
@@ -304,15 +386,17 @@ async function resolveOne(
   const productId = String(hint.productId);
   if (isPreCadastroTitle(hint.title)) {
     // Pré-cadastro rarely has a public photo; skip slow lookups.
-    cache.set(productId, { url: null, at: Date.now() });
+    cache.set(productId, { url: null, at: Date.now(), ver: CACHE_VERSION });
     return null;
   }
 
   const cached = cache.get(productId);
   const now = Date.now();
-  if (cached) {
+  if (cached && cached.ver === CACHE_VERSION) {
     const ttl = cached.url ? positiveTtlMs : negativeTtlMs;
     if (now - cached.at < ttl) return cached.url;
+  } else if (cached) {
+    cache.delete(productId);
   }
 
   const pending = inFlight.get(productId);
@@ -321,15 +405,17 @@ async function resolveOne(
   const task = (async () => {
     try {
       const timeoutMs = mode === 'fast' ? 6_000 : 10_000;
+      // Prefer B2B JSON with strict matching. HTML scrape only as last resort
+      // (og:image is keyed by product id page — safer than loose busca).
       let url = await resolveFromB2bApi(hint, timeoutMs);
       if (!url && mode === 'full') {
         url = await resolveFromProductPage(productId);
       }
-      cache.set(productId, { url, at: Date.now() });
+      cache.set(productId, { url, at: Date.now(), ver: CACHE_VERSION });
       return url;
     } catch (err) {
       console.warn('[storefront-images] resolve failed', productId, err);
-      cache.set(productId, { url: null, at: Date.now() });
+      cache.set(productId, { url: null, at: Date.now(), ver: CACHE_VERSION });
       return null;
     } finally {
       inFlight.delete(productId);
@@ -362,7 +448,7 @@ export function getCachedStorefrontImageUrl(
   productId: string,
 ): string | null | undefined {
   const cached = cache.get(String(productId));
-  if (!cached) return undefined;
+  if (!cached || cached.ver !== CACHE_VERSION) return undefined;
   const ttl = cached.url ? positiveTtlMs : negativeTtlMs;
   if (Date.now() - cached.at >= ttl) return undefined;
   return cached.url;

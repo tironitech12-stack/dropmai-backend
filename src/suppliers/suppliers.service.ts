@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
 import {
-  applyCachedStorefrontImages,
+  invalidateStorefrontImageCache,
   isPreCadastroTitle,
   normalizeCatalogImageUrl,
   resolveStorefrontImageUrl,
@@ -300,19 +300,27 @@ export class SuppliersService {
 
     // Photo-first page: resolve B2B CDN for this window (+ extras to fill gaps).
     // Skip HTML scrape here; keep a hard deadline so SSR stays usable.
-    let windowItems = products.slice(start, start + pageSize * 3);
+    // Drop any prior CDN already attached from looser matchers — re-resolve.
+    let windowItems = products
+      .slice(start, start + pageSize * 3)
+      .map((p) =>
+        p.imageUrl?.includes('arquivos.mercos.com')
+          ? { ...p, imageUrl: null as string | null }
+          : p,
+      );
     if (mode !== 'mock' && windowItems.length) {
-      const cached = applyCachedStorefrontImages(windowItems.map(hintFor));
-      windowItems = applyResolved(windowItems, cached);
+      // Force re-resolve for this window so wrong CDN cache cannot stick.
+      for (const p of windowItems) {
+        invalidateStorefrontImageCache(p.externalId || p.id);
+      }
 
       const need = windowItems
-        .filter((p) => !p.imageUrl?.includes('arquivos.mercos.com'))
         .filter((p) => !isPreCadastroTitle(p.title));
       if (need.length) {
         try {
           const resolved = await resolveStorefrontImageUrls(
             need.map(hintFor),
-            { concurrency: 12, mode: 'fast', deadlineMs: 12_000 },
+            { concurrency: 12, mode: 'fast', deadlineMs: 14_000 },
           );
           windowItems = applyResolved(windowItems, resolved);
         } catch (err) {
