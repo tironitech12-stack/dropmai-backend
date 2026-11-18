@@ -15,7 +15,7 @@ const BROWSER_UA =
 type CacheEntry = { url: string | null; at: number; ver: number };
 
 /** Bump to invalidate wrong CDN associations from looser matchers. */
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;
 
 const cache = new Map<string, CacheEntry>();
 const positiveTtlMs = 24 * 60 * 60 * 1000;
@@ -209,11 +209,20 @@ function isInternalPrSku(sku: string | null | undefined): boolean {
   return Boolean(sku && /^pr-/i.test(sku.trim()));
 }
 
+/** LE-0210 → le-021 ; LKM-MZ11 → lkm-mz11 ; BWB-006 → bwb-006 */
+function productCodeStem(code: string): string {
+  const c = code.toLowerCase();
+  const m = c.match(/^([a-z]+-\d{2,3})/);
+  return m ? m[1] : c;
+}
+
 function searchQueries(hint: ImageResolveHint): string[] {
   const out: string[] = [];
-  // Prefer title product codes (SJK-6685) over opaque PR-* / reused Mercos SKUs.
+  const colors = hint.title ? colorTokens(hint.title) : [];
   for (const code of productCodesFromTitle(hint.title).slice(0, 3)) {
     out.push(code);
+    // Help Mercos return the colored variant page (LE-0210 Preto / LKM Azul).
+    if (colors[0]) out.push(`${code} ${colors[0]}`);
   }
   const sku = hint.sku?.trim();
   // Never busca by PR-* — Mercos returns unrelated first pages.
@@ -225,46 +234,130 @@ function colorTokens(title: string): string[] {
   const t = title.toLowerCase();
   const colors = [
     'preto',
+    'preta',
     'branco',
+    'branca',
     'vermelho',
+    'vermelha',
     'azul',
     'verde',
     'rosa',
     'amarelo',
+    'amarela',
     'dourado',
+    'dourada',
     'prata',
     'cinza',
+    'roxo',
+    'roxa',
   ];
   return colors.filter((c) => t.includes(c));
 }
 
-function rowAgreesWithTitleHint(row: unknown, hint: ImageResolveHint): boolean {
-  const nome = rowNome(row);
-  if (!hint.title) return true;
+function normalizeColor(c: string): string {
+  const x = c.toLowerCase();
+  if (x.startsWith('pret')) return 'preto';
+  if (x.startsWith('branc')) return 'branco';
+  if (x.startsWith('vermelh')) return 'vermelho';
+  if (x.startsWith('amarel')) return 'amarelo';
+  if (x.startsWith('dourad')) return 'dourado';
+  if (x.startsWith('rox')) return 'roxo';
+  return x;
+}
+
+function colorsCompatible(titleColors: string[], rowColors: string[]): boolean {
+  const want = new Set(titleColors.map(normalizeColor));
+  const have = new Set(rowColors.map(normalizeColor));
+  for (const c of want) if (have.has(c)) return true;
+  return false;
+}
+
+function rowHasColorWord(row: unknown): boolean {
+  return colorTokens(rowNome(row)).length > 0;
+}
+
+function rowMatchesTitleColor(row: unknown, titleColors: string[]): boolean {
+  if (!titleColors.length) return true;
+  return colorsCompatible(titleColors, colorTokens(rowNome(row)));
+}
+
+function rowSharesProductCode(row: unknown, hint: ImageResolveHint): boolean {
   const titleCodes = productCodesFromTitle(hint.title).map((c) =>
     c.toLowerCase(),
   );
-  // If the catalog title carries a product code, the B2B row MUST share it.
-  // (SKU 1.1.056.6A alone pointed at IMS-X54 karaoke while title was SJK-6685.)
-  if (titleCodes.length) {
-    if (!titleCodes.some((c) => rowMatchesCode(row, c))) return false;
+  if (!titleCodes.length) return true;
+  return titleCodes.some((c) => rowMatchesCode(row, c));
+}
+
+function rowSharesCodeFamily(row: unknown, hint: ImageResolveHint): boolean {
+  const titleCodes = productCodesFromTitle(hint.title);
+  if (!titleCodes.length) return false;
+  const nome = rowNome(row).toLowerCase();
+  const codigo = String(
+    (row as Record<string, unknown>)?.codigo ?? '',
+  ).toLowerCase();
+  for (const code of titleCodes) {
+    const stem = productCodeStem(code);
+    if (stem.length < 4) continue;
+    if (nome.startsWith(stem) || nome.includes(` ${stem}`)) return true;
+    if (codigo.startsWith(stem)) return true;
+    const rowCodes = productCodesFromTitle(rowNome(row));
+    if (rowCodes.some((rc) => productCodeStem(rc) === stem)) return true;
   }
-  const colors = colorTokens(hint.title);
-  if (colors.length) {
-    const n = nome.toLowerCase();
-    // Prefer same color when title specifies one; allow if row has no color word.
-    const rowColors = colorTokens(nome);
-    if (rowColors.length && !colors.some((c) => rowColors.includes(c))) {
-      return false;
+  return false;
+}
+
+/** Prefer same color; never pick a differently colored variant. */
+function pickColoredCandidate(
+  candidates: unknown[],
+  hint: ImageResolveHint,
+): unknown | null {
+  if (!candidates.length) return null;
+  const titleColors = hint.title ? colorTokens(hint.title) : [];
+  const startsWithCode = (row: unknown) => {
+    const codes = productCodesFromTitle(hint.title);
+    const nome = rowNome(row).toLowerCase();
+    return codes.some((c) => nome.startsWith(c.toLowerCase()));
+  };
+
+  if (titleColors.length) {
+    const exactColor = candidates.filter((row) =>
+      rowMatchesTitleColor(row, titleColors),
+    );
+    if (exactColor.length) {
+      return (
+        exactColor.find(startsWithCode) ??
+        exactColor[0]
+      );
     }
+    // Colorless listing while title asks for a color (LE-0210 Preto → red stock
+    // photo with no color word): reject — blank is better than wrong color.
+    const colorless = candidates.filter((row) => !rowHasColorWord(row));
+    const wrongColor = candidates.filter(
+      (row) => rowHasColorWord(row) && !rowMatchesTitleColor(row, titleColors),
+    );
+    if (colorless.length && !wrongColor.length) {
+      // Only colorless exists for this code — still refuse when title is explicit.
+      return null;
+    }
+    if (wrongColor.length && !colorless.length) {
+      // e.g. LKM Preto but B2B only has Azul/Rosa/Roxo/Vermelho → any photo
+      // beats a blank card; prefer first code-prefixed row.
+      return wrongColor.find(startsWithCode) ?? wrongColor[0];
+    }
+    // Mix of colorless + wrong colors: still refuse colorless (likely default
+    // pack shot for another color) and refuse wrong colors when colorless also
+    // exists — return null so family/color search can try LE-0211 Preto etc.
+    return null;
   }
-  return true;
+
+  return candidates.find(startsWithCode) ?? candidates[0];
 }
 
 /**
  * Strict picker — NEVER returns an arbitrary first search hit.
- * Order: Mercos produto_id → exact SKU/codigo (+ title-code agree) →
- * title product-code equality → very strong title overlap with shared code.
+ * Order: Mercos produto_id → exact SKU/codigo → title product-code (+ color) →
+ * same-line family+color (LE-0210 Preto → LE-0211 Preto) → strong title+code.
  */
 function pickBestFromList(
   list: unknown[],
@@ -277,40 +370,58 @@ function pickBestFromList(
       String((row as Record<string, unknown>).produto_id ?? '') ===
         String(hint.productId),
   );
-  const fromExact = firstImageFromPayload(exact);
-  if (fromExact) return fromExact;
+  if (exact) {
+    const titleColors = hint.title ? colorTokens(hint.title) : [];
+    // Exact id wins unless it is a clearly different color than the title.
+    if (
+      !titleColors.length ||
+      !rowHasColorWord(exact) ||
+      rowMatchesTitleColor(exact, titleColors)
+    ) {
+      const fromExact = firstImageFromPayload(exact);
+      if (fromExact) return fromExact;
+    }
+  }
 
   if (hint.sku && !isInternalPrSku(hint.sku)) {
     const skuNorm = hint.sku.trim().toLowerCase();
-    const bySku = list.find((row) => {
+    const skuRows = list.filter((row) => {
       if (!row || typeof row !== 'object') return false;
       const r = row as Record<string, unknown>;
       const codigo = String(r.codigo ?? '').toLowerCase();
       const codigoParts = codigo.split(/[\s/,]+/).filter(Boolean);
-      const skuEq = codigo === skuNorm || codigoParts.includes(skuNorm);
-      if (!skuEq) return false;
-      return rowAgreesWithTitleHint(row, hint);
+      return codigo === skuNorm || codigoParts.includes(skuNorm);
     });
-    const fromSku = firstImageFromPayload(bySku);
+    const pickedSku = pickColoredCandidate(
+      skuRows.filter((row) => rowSharesProductCode(row, hint) || !productCodesFromTitle(hint.title).length),
+      hint,
+    );
+    const fromSku = firstImageFromPayload(pickedSku);
     if (fromSku) return fromSku;
   }
 
   for (const code of productCodesFromTitle(hint.title)) {
     const codeNorm = code.toLowerCase();
-    const candidates = list.filter(
-      (row) => rowMatchesCode(row, codeNorm) && rowAgreesWithTitleHint(row, hint),
-    );
-    // Prefer row whose nome starts with the code (canonical listing).
-    const preferred =
-      candidates.find((row) =>
-        rowNome(row).toLowerCase().startsWith(codeNorm),
-      ) ?? candidates[0];
+    const candidates = list.filter((row) => rowMatchesCode(row, codeNorm));
+    const preferred = pickColoredCandidate(candidates, hint);
     const fromCode = firstImageFromPayload(preferred);
     if (fromCode) return fromCode;
   }
 
-  // Last resort ONLY when we have a real product code and the row shares it,
-  // plus very strong title overlap. Never attach a photo from bare keyword hits.
+  // Same product line + matching color (LE-0210 Preto → LE-0211 (PRETO)).
+  const titleColors = hint.title ? colorTokens(hint.title) : [];
+  if (titleColors.length && productCodesFromTitle(hint.title).length) {
+    const family = list.filter(
+      (row) =>
+        rowSharesCodeFamily(row, hint) &&
+        rowMatchesTitleColor(row, titleColors),
+    );
+    const preferred = pickColoredCandidate(family, hint);
+    const fromFamily = firstImageFromPayload(preferred);
+    if (fromFamily) return fromFamily;
+  }
+
+  // Last resort: shared product code + very strong title overlap (no cross-color).
   if (hint.title) {
     const titleCodes = productCodesFromTitle(hint.title).map((c) =>
       c.toLowerCase(),
@@ -319,7 +430,12 @@ function pickBestFromList(
     let best: { score: number; url: string } | null = null;
     for (const row of list) {
       if (!titleCodes.some((c) => rowMatchesCode(row, c))) continue;
-      if (!rowAgreesWithTitleHint(row, hint)) continue;
+      if (titleColors.length) {
+        if (rowHasColorWord(row) && !rowMatchesTitleColor(row, titleColors)) {
+          continue;
+        }
+        if (!rowHasColorWord(row)) continue;
+      }
       const score = titleSimilarity(hint.title, rowNome(row));
       if (score < 0.85) continue;
       const shared = significantTokens(hint.title).filter((t) =>
@@ -346,9 +462,20 @@ async function resolveFromB2bApi(
       timeoutMs,
     );
     const fromDetail = firstImageFromPayload(detail);
-    if (fromDetail) return fromDetail;
+    if (fromDetail) {
+      const titleColors = hint.title ? colorTokens(hint.title) : [];
+      if (
+        !titleColors.length ||
+        !detail ||
+        typeof detail !== 'object' ||
+        !rowHasColorWord(detail) ||
+        rowMatchesTitleColor(detail, titleColors)
+      ) {
+        return fromDetail;
+      }
+    }
 
-    for (const q of searchQueries(hint).slice(0, 3)) {
+    for (const q of searchQueries(hint).slice(0, 4)) {
       const list = await fetchJson(
         `${base}/api_b2b/v1/produtos?busca=${encodeURIComponent(q)}`,
         timeoutMs,
