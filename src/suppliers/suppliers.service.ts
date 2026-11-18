@@ -4,6 +4,7 @@ import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
 import {
   isPreCadastroTitle,
+  normalizeCatalogImageUrl,
   productImageProxyUrl,
   resolveStorefrontImageUrl,
   resolveStorefrontImageUrls,
@@ -293,16 +294,15 @@ export class SuppliersService {
       }
     }
 
-    // Every listed card gets a real img URL: prefer CDN, else Dropmai image proxy
-    // (proxy scrapes storefront on demand — photos are public on xnamai.mercos.com).
+    // Every listed card gets a real img URL: prefer CDN, else absolute Dropmai
+    // image proxy (never localhost — Vercel browsers cannot load it).
     pageItems = pageItems.map((p) => ({
       ...p,
-      imageUrl:
-        p.imageUrl ||
-        productImageProxyUrl(p.externalId || p.id, {
-          sku: p.sku,
-          title: p.title,
-        }),
+      imageUrl: normalizeCatalogImageUrl(
+        p.imageUrl,
+        p.externalId || p.id,
+        { sku: p.sku, title: p.title },
+      ),
     }));
 
     // Destaques: prefer CDN photos already resolved on this page; skip
@@ -329,12 +329,11 @@ export class SuppliersService {
 
     let featured = featuredPool.slice(0, 12).map((p) => ({
       ...p,
-      imageUrl:
-        p.imageUrl ||
-        productImageProxyUrl(p.externalId || p.id, {
-          sku: p.sku,
-          title: p.title,
-        }),
+      imageUrl: normalizeCatalogImageUrl(
+        p.imageUrl,
+        p.externalId || p.id,
+        { sku: p.sku, title: p.title },
+      ),
     }));
 
     const missingCdn = pageItems.filter((p) => !withCdn(p)).length;

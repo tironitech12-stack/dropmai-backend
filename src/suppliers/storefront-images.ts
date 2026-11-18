@@ -213,11 +213,25 @@ export async function resolveStorefrontImageUrl(
 }
 
 export function publicApiBase(): string {
-  return (
-    process.env.PUBLIC_API_URL?.trim() ||
-    process.env.DROPMAI_PUBLIC_API_URL?.trim() ||
-    'http://localhost:4000'
-  ).replace(/\/$/, '');
+  const candidates = [
+    process.env.PUBLIC_API_URL,
+    process.env.DROPMAI_PUBLIC_API_URL,
+    process.env.RENDER_EXTERNAL_URL,
+  ]
+    .map((v) => v?.trim())
+    .filter(Boolean) as string[];
+
+  for (const raw of candidates) {
+    const base = raw.replace(/\/$/, '');
+    // Never emit localhost/loopback into API payloads that the Vercel browser will load.
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(base)) continue;
+    return base;
+  }
+
+  if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+    return 'https://dropmai-backend.onrender.com';
+  }
+  return 'http://localhost:4000';
 }
 
 /** Always-available Dropmai proxy URL (FE can use when CDN not yet known). */
@@ -230,6 +244,42 @@ export function productImageProxyUrl(
   if (hint?.title) qs.set('q', hint.title.slice(0, 80));
   const suffix = qs.toString() ? `?${qs}` : '';
   return `${publicApiBase()}/api/v1/suppliers/xnamai/products/${encodeURIComponent(productId)}/image${suffix}`;
+}
+
+/** Rewrite accidental localhost/relative proxy URLs before they reach the browser. */
+export function normalizeCatalogImageUrl(
+  imageUrl: string | null | undefined,
+  productId: string,
+  hint?: { sku?: string | null; title?: string | null },
+): string {
+  const raw = (imageUrl ?? '').trim();
+  if (/^https:\/\/arquivos\.mercos\.com\//i.test(raw)) return raw;
+  if (/^https:\/\/thumbnails\.meuspedidos\.com\.br\//i.test(raw)) return raw;
+
+  // Relative proxy path → absolute public API
+  if (raw.startsWith('/api/v1/suppliers/xnamai/products/')) {
+    return `${publicApiBase()}${raw}`;
+  }
+
+  // Broken localhost baked into production responses
+  if (
+    !raw ||
+    /localhost|127\.0\.0\.1/i.test(raw) ||
+    raw.includes('/suppliers/xnamai/products/')
+  ) {
+    // If it's already an absolute public proxy on the right host, keep query.
+    if (
+      raw.startsWith('https://') &&
+      raw.includes('/suppliers/xnamai/products/') &&
+      !/localhost|127\.0\.0\.1/i.test(raw)
+    ) {
+      return raw;
+    }
+    return productImageProxyUrl(productId, hint);
+  }
+
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return productImageProxyUrl(productId, hint);
 }
 
 export function isPreCadastroTitle(title: string | null | undefined): boolean {
