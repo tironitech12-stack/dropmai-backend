@@ -32,7 +32,13 @@ async function bootstrap() {
     origin: origins,
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Dropmai-User'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Cookie',
+      'X-Dropmai-User',
+      'X-Requested-With',
+    ],
     optionsSuccessStatus: 204,
   });
   app.use(cookieParser());

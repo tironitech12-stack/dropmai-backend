@@ -18,6 +18,11 @@ export class AuthGuard implements CanActivate {
 
     const cookie = req.cookies?.[SESSION_COOKIE];
     const header = req.headers['x-dropmai-user'];
+    const auth = req.headers.authorization;
+    const bearer =
+      auth && /^Bearer\s+/i.test(auth)
+        ? auth.replace(/^Bearer\s+/i, '').trim()
+        : undefined;
 
     const fromCookie = decodeSession(cookie);
     if (fromCookie) {
@@ -25,11 +30,12 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
-    // Optional debug/header override: pass a signed session token, not "demo"
-    if (header) {
-      const fromHeader = decodeSession(header);
-      if (fromHeader) {
-        req.user = fromHeader;
+    // Cross-origin clients (Vercel → Render) forward the mirrored dm1 session
+    // via X-Dropmai-User or Authorization: Bearer (not a bare "demo" string).
+    for (const token of [header, bearer]) {
+      const user = decodeSession(token);
+      if (user) {
+        req.user = user;
         return true;
       }
     }
