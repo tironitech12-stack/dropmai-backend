@@ -384,14 +384,18 @@ export class SuppliersService {
       }
     }
 
-    pageItems = pageItems.map((p) => ({
-      ...p,
-      imageHashes: [],
-      imageUrl: normalizeCatalogImageUrl(p.imageUrl, p.externalId || p.id, {
-        sku: p.sku,
-        title: p.title,
-      }),
-    }));
+    // Emit CDN only. After strict resolve, missing/wrong-color → null (blank
+    // tile) — never a proxy/SVG that could imply a photo exists.
+    pageItems = pageItems.map((p) => {
+      const raw = (p.imageUrl ?? '').trim();
+      if (/^https:\/\/arquivos\.mercos\.com\//i.test(raw)) {
+        return { ...p, imageHashes: [], imageUrl: raw };
+      }
+      if (/^https:\/\/thumbnails\.meuspedidos\.com\.br\//i.test(raw)) {
+        return { ...p, imageHashes: [], imageUrl: raw };
+      }
+      return { ...p, imageHashes: [], imageUrl: null };
+    });
 
     const withCdn = withCdnNow;
 
