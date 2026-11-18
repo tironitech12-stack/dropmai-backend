@@ -2,7 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
-import { resolveStorefrontImageUrls } from './storefront-images';
+import {
+  isPreCadastroTitle,
+  productImageProxyUrl,
+  resolveStorefrontImageUrl,
+  resolveStorefrontImageUrls,
+} from './storefront-images';
 import type { SupplierProduct, SupplierSyncResult } from './types';
 import { XnamaiCatalogAdapter } from './xnamai.adapter';
 
@@ -177,6 +182,7 @@ export class SuppliersService {
     total: number;
     totalPages: number;
     warning?: string;
+    imageGaps?: { pageMissingCdn: number; note: string };
   }> {
     const inStock = options?.inStock !== false;
     const page = Math.max(options?.page ?? 1, 1);
@@ -260,43 +266,83 @@ export class SuppliersService {
       .filter((c) => c.count > 0)
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 
-    let featured = products.filter((p) => p.featured).slice(0, 12);
-    if (featured.length < 6) {
-      featured = products.slice(0, 12);
-    }
-
     const total = products.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (page - 1) * pageSize;
     let pageItems = products.slice(start, start + pageSize);
 
-    // Mercos API gives SHA-512 hashes only; public storefront pages expose CDN URLs.
-    const needImages = [...pageItems, ...featured].filter((p) => !p.imageUrl);
-    if (needImages.length && mode !== 'mock') {
+    // Resolve CDN URLs for the visible page first (Mercos API is hashes-only).
+    const resolveTargets = pageItems.filter((p) => !p.imageUrl);
+    if (resolveTargets.length && mode !== 'mock') {
       try {
         const resolved = await resolveStorefrontImageUrls(
-          needImages.map((p) => p.externalId || p.id),
+          resolveTargets.map((p) => ({
+            productId: p.externalId || p.id,
+            sku: p.sku,
+            title: p.title,
+          })),
+          { concurrency: 6 },
         );
-        if (resolved.size) {
-          const apply = (list: CatalogDto[]) =>
-            list.map((p) => {
-              if (p.imageUrl) return p;
-              const url = resolved.get(p.externalId) ?? resolved.get(p.id);
-              return url ? { ...p, imageUrl: url } : p;
-            });
-          pageItems = apply(pageItems);
-          featured = apply(featured);
-        }
+        pageItems = pageItems.map((p) => {
+          if (p.imageUrl) return p;
+          const url = resolved.get(p.externalId) ?? resolved.get(p.id);
+          return url ? { ...p, imageUrl: url } : p;
+        });
       } catch (err) {
         console.warn('[suppliers] storefront image resolve failed', err);
       }
     }
 
+    // Every listed card gets a real img URL: prefer CDN, else Dropmai image proxy
+    // (proxy scrapes storefront on demand — photos are public on xnamai.mercos.com).
+    pageItems = pageItems.map((p) => ({
+      ...p,
+      imageUrl:
+        p.imageUrl ||
+        productImageProxyUrl(p.externalId || p.id, {
+          sku: p.sku,
+          title: p.title,
+        }),
+    }));
+
+    // Destaques: prefer CDN photos already resolved on this page; skip
+    // pré-cadastro until a real storefront photo is confirmed.
+    const withCdn = (p: CatalogDto) =>
+      Boolean(p.imageUrl && p.imageUrl.includes('arquivos.mercos.com'));
+
+    const featuredPool: CatalogDto[] = [];
+    const seenFeatured = new Set<string>();
+    const pushFeatured = (list: CatalogDto[]) => {
+      for (const p of list) {
+        if (seenFeatured.has(p.id)) continue;
+        if (isPreCadastroTitle(p.title) && !withCdn(p)) continue;
+        seenFeatured.add(p.id);
+        featuredPool.push(p);
+      }
+    };
+    pushFeatured(pageItems.filter(withCdn));
+    pushFeatured(
+      products.filter((p) => p.featured && !isPreCadastroTitle(p.title)),
+    );
+    pushFeatured(pageItems);
+    pushFeatured(products.filter((p) => !isPreCadastroTitle(p.title)));
+
+    let featured = featuredPool.slice(0, 12).map((p) => ({
+      ...p,
+      imageUrl:
+        p.imageUrl ||
+        productImageProxyUrl(p.externalId || p.id, {
+          sku: p.sku,
+          title: p.title,
+        }),
+    }));
+
+    const missingCdn = pageItems.filter((p) => !withCdn(p)).length;
     const warning =
       mode === 'mock'
         ? 'Catálogo mock ativo. Configure MERCOS_ADAPTOR_API_KEY ou XNAMAI_BI_API_KEY (e DROPMAI_USE_MOCK=false) no Render.'
-        : pageItems.every((p) => !p.imageUrl)
-          ? 'Sem fotos nesta página. Confira XNAMAI_STOREFRONT_URL (padrão https://xnamai.mercos.com) no Render.'
+        : missingCdn > 0
+          ? `${missingCdn} item(ns) nesta página usam proxy Dropmai (resolução sob demanda). CDN direto requer XNAMAI_STOREFRONT_URL.`
           : undefined;
 
     return {
@@ -304,16 +350,35 @@ export class SuppliersService {
       featured,
       categories,
       mode,
-      source: pageItems.some((p) => p.imageUrl)
-        ? `${source}+storefront-images`
-        : source,
+      source: `${source}+storefront-images`,
       inStock,
       page,
       pageSize,
       total,
       totalPages,
       warning,
+      imageGaps: {
+        pageMissingCdn: missingCdn,
+        note: 'Mercos API hashes ≠ CDN UUID filenames. Photos come from storefront HTML/proxy. Pré-cadastro without CDN is deprioritized in Destaques.',
+      },
     };
+  }
+
+  /** Public image proxy: resolve storefront CDN and redirect (or stream). */
+  async resolveProductImage(
+    productId: string,
+    options?: { sku?: string; q?: string; force?: boolean },
+  ): Promise<{ redirectUrl: string } | { notFound: true }> {
+    const url = await resolveStorefrontImageUrl(
+      {
+        productId,
+        sku: options?.sku,
+        title: options?.q,
+      },
+      { force: options?.force },
+    );
+    if (url) return { redirectUrl: url };
+    return { notFound: true };
   }
 
   async listXnamaiCategories() {
