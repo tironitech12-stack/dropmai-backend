@@ -15,7 +15,7 @@ const BROWSER_UA =
 type CacheEntry = { url: string | null; at: number; ver: number };
 
 /** Bump to invalidate wrong CDN associations from looser matchers. */
-const CACHE_VERSION = 5;
+const CACHE_VERSION = 6;
 
 const cache = new Map<string, CacheEntry>();
 const positiveTtlMs = 24 * 60 * 60 * 1000;
@@ -231,7 +231,7 @@ function searchQueries(hint: ImageResolveHint): string[] {
 }
 
 function colorTokens(title: string): string[] {
-  const t = title.toLowerCase();
+  const t = title.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
   const colors = [
     'preto',
     'preta',
@@ -251,7 +251,10 @@ function colorTokens(title: string): string[] {
     'roxo',
     'roxa',
   ];
-  return colors.filter((c) => t.includes(c));
+  // Word-boundary match so "rosa" never hits inside unrelated tokens.
+  return colors.filter((c) =>
+    new RegExp(`(^|[^a-z0-9])${c}([^a-z0-9]|$)`, 'i').test(t),
+  );
 }
 
 function normalizeColor(c: string): string {
@@ -321,33 +324,14 @@ function pickColoredCandidate(
   };
 
   if (titleColors.length) {
+    // ONLY exact color. Never fall back to another color of the same code
+    // (LKM Preto/Dourado/Prata must stay blank rather than show Azul/Rosa).
     const exactColor = candidates.filter((row) =>
       rowMatchesTitleColor(row, titleColors),
     );
     if (exactColor.length) {
-      return (
-        exactColor.find(startsWithCode) ??
-        exactColor[0]
-      );
+      return exactColor.find(startsWithCode) ?? exactColor[0];
     }
-    // Colorless listing while title asks for a color (LE-0210 Preto → red stock
-    // photo with no color word): reject — blank is better than wrong color.
-    const colorless = candidates.filter((row) => !rowHasColorWord(row));
-    const wrongColor = candidates.filter(
-      (row) => rowHasColorWord(row) && !rowMatchesTitleColor(row, titleColors),
-    );
-    if (colorless.length && !wrongColor.length) {
-      // Only colorless exists for this code — still refuse when title is explicit.
-      return null;
-    }
-    if (wrongColor.length && !colorless.length) {
-      // e.g. LKM Preto but B2B only has Azul/Rosa/Roxo/Vermelho → any photo
-      // beats a blank card; prefer first code-prefixed row.
-      return wrongColor.find(startsWithCode) ?? wrongColor[0];
-    }
-    // Mix of colorless + wrong colors: still refuse colorless (likely default
-    // pack shot for another color) and refuse wrong colors when colorless also
-    // exists — return null so family/color search can try LE-0211 Preto etc.
     return null;
   }
 
