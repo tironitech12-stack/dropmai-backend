@@ -53,6 +53,18 @@ npm run start:dev
 
 Não armazene tokens Mercos neste serviço — só a chave do Adaptor.
 
+## CORS / Render
+
+Por padrão o backend libera `http://localhost:3000`, `http://127.0.0.1:3000` e `https://dropmai.vercel.app` (com `credentials: true` para cookie).
+
+No Render, defina (ou confirme):
+
+```text
+CORS_ORIGINS=https://dropmai.vercel.app,http://localhost:3000
+```
+
+Origens extras (previews Vercel) podem ser acrescentadas na mesma variável, separadas por vírgula. O código faz merge com os defaults acima.
+
 ## Render
 
 Bind em `0.0.0.0:$PORT` (já no `main.ts`). Filesystem efêmero — use Postgres gerenciado.
