@@ -3,11 +3,12 @@ import { Prisma } from '@prisma/client';
 import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
 import {
+  applyCachedStorefrontImages,
   isPreCadastroTitle,
   normalizeCatalogImageUrl,
-  productImageProxyUrl,
   resolveStorefrontImageUrl,
   resolveStorefrontImageUrls,
+  warmStorefrontImageCache,
 } from './storefront-images';
 import type { SupplierProduct, SupplierSyncResult } from './types';
 import { XnamaiCatalogAdapter } from './xnamai.adapter';
@@ -187,7 +188,11 @@ export class SuppliersService {
   }> {
     const inStock = options?.inStock !== false;
     const page = Math.max(options?.page ?? 1, 1);
-    const pageSize = Math.min(Math.max(options?.pageSize ?? options?.limit ?? 48, 1), 100);
+    // Smaller default page → faster first paint of product cards.
+    const pageSize = Math.min(
+      Math.max(options?.pageSize ?? options?.limit ?? 24, 1),
+      60,
+    );
     const categoryId = options?.categoryId?.trim() || '';
     const q = options?.q?.trim().toLowerCase() || '';
 
@@ -252,7 +257,13 @@ export class SuppliersService {
       );
     }
 
-    products.sort((a, b) => b.stock - a.stock || a.title.localeCompare(b.title));
+    // Pré-cadastro last; then stock desc (photos still resolve via cache/proxy).
+    products.sort((a, b) => {
+      const aPre = isPreCadastroTitle(a.title) ? 1 : 0;
+      const bPre = isPreCadastroTitle(b.title) ? 1 : 0;
+      if (aPre !== bPre) return aPre - bPre;
+      return b.stock - a.stock || a.title.localeCompare(b.title);
+    });
 
     const counts = new Map<string, number>();
     for (const p of products) {
@@ -272,41 +283,39 @@ export class SuppliersService {
     const start = (page - 1) * pageSize;
     let pageItems = products.slice(start, start + pageSize);
 
-    // Resolve CDN URLs for the visible page first (Mercos API is hashes-only).
-    const resolveTargets = pageItems.filter((p) => !p.imageUrl);
-    if (resolveTargets.length && mode !== 'mock') {
-      try {
-        const resolved = await resolveStorefrontImageUrls(
-          resolveTargets.map((p) => ({
-            productId: p.externalId || p.id,
-            sku: p.sku,
-            title: p.title,
-          })),
-          { concurrency: 6 },
-        );
+    const hintFor = (p: CatalogDto) => ({
+      productId: p.externalId || p.id,
+      sku: p.sku,
+      title: p.title,
+    });
+
+    // List path: NEVER block on storefront HTML scrape. Use warm cache hits only,
+    // then return proxy URLs; warm B2B lookups in the background for next paint.
+    if (mode !== 'mock') {
+      const cached = applyCachedStorefrontImages(pageItems.map(hintFor));
+      if (cached.size) {
         pageItems = pageItems.map((p) => {
-          if (p.imageUrl) return p;
-          const url = resolved.get(p.externalId) ?? resolved.get(p.id);
+          if (p.imageUrl?.includes('arquivos.mercos.com')) return p;
+          const url = cached.get(p.externalId) ?? cached.get(p.id);
           return url ? { ...p, imageUrl: url } : p;
         });
-      } catch (err) {
-        console.warn('[suppliers] storefront image resolve failed', err);
       }
+      warmStorefrontImageCache(
+        pageItems.filter((p) => !p.imageUrl?.includes('arquivos.mercos.com')).map(hintFor),
+        { concurrency: 10, mode: 'fast' },
+      );
     }
 
-    // Every listed card gets a real img URL: prefer CDN, else absolute Dropmai
-    // image proxy (never localhost — Vercel browsers cannot load it).
+    // Prefer CDN; else absolute Dropmai proxy (streams CDN or SVG placeholder).
     pageItems = pageItems.map((p) => ({
       ...p,
-      imageUrl: normalizeCatalogImageUrl(
-        p.imageUrl,
-        p.externalId || p.id,
-        { sku: p.sku, title: p.title },
-      ),
+      imageHashes: [],
+      imageUrl: normalizeCatalogImageUrl(p.imageUrl, p.externalId || p.id, {
+        sku: p.sku,
+        title: p.title,
+      }),
     }));
 
-    // Destaques: prefer CDN photos already resolved on this page; skip
-    // pré-cadastro until a real storefront photo is confirmed.
     const withCdn = (p: CatalogDto) =>
       Boolean(p.imageUrl && p.imageUrl.includes('arquivos.mercos.com'));
 
@@ -315,30 +324,25 @@ export class SuppliersService {
     const pushFeatured = (list: CatalogDto[]) => {
       for (const p of list) {
         if (seenFeatured.has(p.id)) continue;
-        // Never put pré-cadastro in Destaques (even if a wrong CDN was matched).
         if (isPreCadastroTitle(p.title)) continue;
         seenFeatured.add(p.id);
         featuredPool.push(p);
       }
     };
     pushFeatured(pageItems.filter(withCdn));
-    pushFeatured(products.filter((p) => p.featured));
+    pushFeatured(products.filter((p) => p.featured && withCdn(p)));
     pushFeatured(pageItems);
-    pushFeatured(products);
+    pushFeatured(products.filter((p) => p.featured));
 
-    // Resolve CDN for featured candidates that still lack arquivos.mercos URLs
+    // Short B2B-only budget for Destaques — skip HTML scrape on list path.
     const featuredNeed = featuredPool
       .filter((p) => !withCdn(p))
-      .slice(0, 16);
+      .slice(0, 12);
     if (featuredNeed.length && mode !== 'mock') {
       try {
         const resolved = await resolveStorefrontImageUrls(
-          featuredNeed.map((p) => ({
-            productId: p.externalId || p.id,
-            sku: p.sku,
-            title: p.title,
-          })),
-          { concurrency: 5 },
+          featuredNeed.map(hintFor),
+          { concurrency: 8, mode: 'fast', deadlineMs: 2500 },
         );
         for (let i = 0; i < featuredPool.length; i++) {
           const p = featuredPool[i];
@@ -351,12 +355,12 @@ export class SuppliersService {
       }
     }
 
-    // Destaques must show real photos — drop candidates still without CDN.
     let featured = featuredPool
       .filter(withCdn)
-      .slice(0, 12)
+      .slice(0, 8)
       .map((p) => ({
         ...p,
+        imageHashes: [],
         imageUrl: normalizeCatalogImageUrl(
           p.imageUrl,
           p.externalId || p.id,
@@ -364,34 +368,36 @@ export class SuppliersService {
         ),
       }));
 
-    if (featured.length < 6) {
+    if (featured.length < 4) {
       const fillers = pageItems
         .filter(withCdn)
         .filter((p) => !isPreCadastroTitle(p.title))
         .filter((p) => !featured.some((f) => f.id === p.id))
         .map((p) => ({
           ...p,
+          imageHashes: [],
           imageUrl: normalizeCatalogImageUrl(
             p.imageUrl,
             p.externalId || p.id,
             { sku: p.sku, title: p.title },
           ),
         }));
-      featured = [...featured, ...fillers].slice(0, 12);
+      featured = [...featured, ...fillers].slice(0, 8);
     }
 
     const missingCdn = pageItems.filter((p) => !withCdn(p)).length;
     const warning =
       mode === 'mock'
         ? 'Catálogo mock ativo. Configure MERCOS_ADAPTOR_API_KEY ou XNAMAI_BI_API_KEY (e DROPMAI_USE_MOCK=false) no Render.'
-        : missingCdn > 0
-          ? `${missingCdn} item(ns) nesta página usam proxy Dropmai (resolução sob demanda). CDN direto requer XNAMAI_STOREFRONT_URL.`
-          : undefined;
+        : undefined;
+
+    // Trim category payload for first paint (FE only shows ~40 chips).
+    const categoriesOut = categories.slice(0, 48);
 
     return {
       products: pageItems,
       featured,
-      categories,
+      categories: categoriesOut,
       mode,
       source: `${source}+storefront-images`,
       inStock,
@@ -402,7 +408,7 @@ export class SuppliersService {
       warning,
       imageGaps: {
         pageMissingCdn: missingCdn,
-        note: 'Mercos API hashes ≠ CDN UUID filenames. Photos come from storefront HTML/proxy. Pré-cadastro without CDN is deprioritized in Destaques.',
+        note: 'List uses cache+proxy (SVG fallback). CDN filled via B2B warm. Pré-cadastro deprioritized.',
       },
     };
   }
@@ -418,7 +424,11 @@ export class SuppliersService {
         sku: options?.sku,
         title: options?.q,
       },
-      { force: options?.force },
+      {
+        force: options?.force,
+        // force=1 allows HTML scrape; default fast B2B keeps thumbs snappy.
+        mode: options?.force ? 'full' : 'fast',
+      },
     );
     if (url) return { redirectUrl: url };
     return { notFound: true };

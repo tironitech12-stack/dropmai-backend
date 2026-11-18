@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
+import { placeholderImageSvg } from './storefront-images';
 import { SuppliersService } from './suppliers.service';
 
 @Controller('api/v1')
@@ -42,9 +43,11 @@ export class SuppliersController {
       force: force === '1' || force === 'true',
     });
     if (!('redirectUrl' in result)) {
-      return res.status(404).json({
-        message: 'Imagem não encontrada na vitrine Xnamai',
-      });
+      // Never return JSON 404 to <img> — browsers show a broken-icon glyph.
+      const label = (sku || q || productId || 'X').trim().slice(0, 2);
+      res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.status(200).send(placeholderImageSvg(label));
     }
 
     // Optional redirect mode (debug); default streams the CDN bytes.
