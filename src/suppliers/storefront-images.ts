@@ -52,6 +52,10 @@ function extractCdnUrl(text: string): string | null {
 function firstImageFromPayload(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null;
   const row = data as Record<string, unknown>;
+  const singular = row.imagem ?? row.image ?? row.foto;
+  if (typeof singular === 'string' && /arquivos\.mercos\.com/i.test(singular)) {
+    return singular;
+  }
   const imagens = row.imagens ?? row.images ?? row.fotos;
   if (Array.isArray(imagens)) {
     for (const item of imagens) {
@@ -110,37 +114,150 @@ async function fetchHtml(url: string, attempt: number): Promise<string | null> {
   }
 }
 
-/** Mercos-style codes: BWB-006, CB-55, ICA-2405, 202A, YX-5, LL-00. */
+const CODE_RE =
+  /\b(?:[A-Z]{1,10}[-_/]?[A-Z0-9]{1,14}|[0-9]{2,4}[A-Z]{1,4})\b/gi;
+
+/** Mercos-style codes: BWB-006, CB-55, LKM-MZ11, 202A, YX-5, LL-00. */
+export function productCodesFromTitle(
+  title: string | null | undefined,
+): string[] {
+  const t = title?.trim();
+  if (!t || /^pr[eé]\s*cadastro/i.test(t)) return [];
+  const out: string[] = [];
+  for (const m of t.matchAll(CODE_RE)) {
+    const code = m[0].replace(/[-_/]+$/, '');
+    if (!/\d/.test(code)) continue;
+    if (/^pr[eé]/i.test(code)) continue;
+    // Skip pure measurements like 384mL / 5ml / 600ml
+    if (/^\d+(ml|mm|cm|kg|g|w|v|a|mah)$/i.test(code)) continue;
+    out.push(code);
+  }
+  return [...new Set(out)];
+}
+
 export function productCodeFromTitle(
   title: string | null | undefined,
 ): string | null {
-  const t = title?.trim();
-  if (!t) return null;
-  if (/^pr[eé]\s*cadastro/i.test(t)) return null;
-  const m = t.match(
-    /^(?:[A-Z]{1,10}[-_/]?[A-Z0-9]{1,14}|[0-9]{2,4}[A-Z]{1,4})/i,
+  return productCodesFromTitle(title)[0] ?? null;
+}
+
+function significantTokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .split(/\s+/)
+    .filter(
+      (w) =>
+        w.length >= 3 &&
+        !/^(com|para|por|sem|the|and|de|da|do|das|dos|uma|uno|kit|und|un)$/i.test(
+          w,
+        ),
+    );
+}
+
+function titleSimilarity(a: string, b: string): number {
+  const ta = new Set(significantTokens(a));
+  const tb = new Set(significantTokens(b));
+  if (!ta.size || !tb.size) return 0;
+  let inter = 0;
+  for (const t of ta) if (tb.has(t)) inter++;
+  return inter / Math.min(ta.size, tb.size);
+}
+
+function rowNome(row: unknown): string {
+  if (!row || typeof row !== 'object') return '';
+  const r = row as Record<string, unknown>;
+  return String(r.nome ?? r.name ?? '');
+}
+
+function rowMatchesCode(row: unknown, codeNorm: string): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as Record<string, unknown>;
+  const codigo = String(r.codigo ?? '').toLowerCase();
+  const nome = rowNome(row).toLowerCase();
+  return (
+    codigo === codeNorm ||
+    codigo.split(/[\s/,]+/).includes(codeNorm) ||
+    nome.startsWith(codeNorm) ||
+    nome.includes(` ${codeNorm}`) ||
+    nome.includes(`${codeNorm} `) ||
+    nome.includes(`${codeNorm}-`) ||
+    nome.includes(`/${codeNorm}`) ||
+    new RegExp(`(^|[\\s\\-_/])${codeNorm}($|[\\s\\-_/])`, 'i').test(nome)
   );
-  if (!m) return null;
-  const code = m[0].replace(/[-_/]+$/, '');
-  if (!/\d/.test(code)) return null;
-  if (/^pr[eé]/i.test(code)) return null;
-  return code;
 }
 
 function searchQueries(hint: ImageResolveHint): string[] {
   const out: string[] = [];
   const sku = hint.sku?.trim();
-  if (sku) out.push(sku);
-  const code = productCodeFromTitle(hint.title);
-  if (code && code.toLowerCase() !== sku?.toLowerCase()) out.push(code);
+  if (sku && !/^pr-/i.test(sku)) out.push(sku);
+  else if (sku) out.push(sku);
+  for (const code of productCodesFromTitle(hint.title).slice(0, 3)) {
+    if (code.toLowerCase() !== sku?.toLowerCase()) out.push(code);
+  }
   return [...new Set(out.filter(Boolean))];
+}
+
+function pickBestFromList(
+  list: unknown[],
+  hint: ImageResolveHint,
+): string | null {
+  const exact = list.find(
+    (row) =>
+      row &&
+      typeof row === 'object' &&
+      String((row as Record<string, unknown>).produto_id ?? '') ===
+        String(hint.productId),
+  );
+  const fromExact = firstImageFromPayload(exact);
+  if (fromExact) return fromExact;
+
+  if (hint.sku) {
+    const skuNorm = hint.sku.trim().toLowerCase();
+    const bySku = list.find((row) => {
+      if (!row || typeof row !== 'object') return false;
+      const r = row as Record<string, unknown>;
+      const codigo = String(r.codigo ?? '').toLowerCase();
+      const nome = rowNome(row).toLowerCase();
+      return (
+        codigo === skuNorm ||
+        codigo.split(/[\s/,]+/).includes(skuNorm) ||
+        nome.startsWith(skuNorm)
+      );
+    });
+    const fromSku = firstImageFromPayload(bySku);
+    if (fromSku) return fromSku;
+  }
+
+  for (const code of productCodesFromTitle(hint.title)) {
+    const codeNorm = code.toLowerCase();
+    const byCode = list.find((row) => rowMatchesCode(row, codeNorm));
+    const fromCode = firstImageFromPayload(byCode);
+    if (fromCode) return fromCode;
+  }
+
+  // Sibling / retitled SKU: high title overlap + has CDN image.
+  if (hint.title) {
+    let best: { score: number; url: string } | null = null;
+    for (const row of list.slice(0, 40)) {
+      const score = titleSimilarity(hint.title, rowNome(row));
+      if (score < 0.6) continue;
+      const url = firstImageFromPayload(row);
+      if (!url) continue;
+      if (!best || score > best.score) best = { score, url };
+    }
+    if (best) return best.url;
+  }
+
+  return null;
 }
 
 async function resolveFromB2bApi(
   hint: ImageResolveHint,
   timeoutMs = 8_000,
 ): Promise<string | null> {
-  // Prefer mercos.com first (usually faster / authoritative for imagens).
   for (const base of storefrontBases()) {
     const detail = await fetchJson(
       `${base}/api_b2b/v1/produtos/${encodeURIComponent(hint.productId)}`,
@@ -149,56 +266,14 @@ async function resolveFromB2bApi(
     const fromDetail = firstImageFromPayload(detail);
     if (fromDetail) return fromDetail;
 
-    for (const q of searchQueries(hint).slice(0, 2)) {
+    for (const q of searchQueries(hint).slice(0, 3)) {
       const list = await fetchJson(
         `${base}/api_b2b/v1/produtos?busca=${encodeURIComponent(q)}`,
         timeoutMs,
       );
       if (!Array.isArray(list) || !list.length) continue;
-
-      const exact = list.find(
-        (row) =>
-          row &&
-          typeof row === 'object' &&
-          String((row as Record<string, unknown>).produto_id ?? '') ===
-            String(hint.productId),
-      );
-      const fromExact = firstImageFromPayload(exact);
-      if (fromExact) return fromExact;
-
-      if (hint.sku) {
-        const skuNorm = hint.sku.trim().toLowerCase();
-        const bySku = list.find((row) => {
-          if (!row || typeof row !== 'object') return false;
-          const r = row as Record<string, unknown>;
-          const codigo = String(r.codigo ?? '').toLowerCase();
-          const nome = String(r.nome ?? r.name ?? '').toLowerCase();
-          return codigo === skuNorm || nome.startsWith(skuNorm);
-        });
-        const fromSku = firstImageFromPayload(bySku);
-        if (fromSku) return fromSku;
-      }
-
-      const titleCode = productCodeFromTitle(hint.title);
-      if (titleCode) {
-        const codeNorm = titleCode.toLowerCase();
-        const byCode = list.find((row) => {
-          if (!row || typeof row !== 'object') return false;
-          const r = row as Record<string, unknown>;
-          const codigo = String(r.codigo ?? '').toLowerCase();
-          const nome = String(r.nome ?? r.name ?? '').toLowerCase();
-          return (
-            codigo === codeNorm ||
-            nome.startsWith(codeNorm) ||
-            nome.includes(` ${codeNorm}`) ||
-            nome.includes(`${codeNorm} `) ||
-            nome.includes(`${codeNorm}-`) ||
-            nome.includes(`/${codeNorm}`)
-          );
-        });
-        const fromCode = firstImageFromPayload(byCode);
-        if (fromCode) return fromCode;
-      }
+      const picked = pickBestFromList(list, hint);
+      if (picked) return picked;
     }
   }
   return null;

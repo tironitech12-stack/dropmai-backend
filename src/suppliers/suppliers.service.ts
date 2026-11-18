@@ -281,7 +281,6 @@ export class SuppliersService {
     const total = products.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (page - 1) * pageSize;
-    let pageItems = products.slice(start, start + pageSize);
 
     const hintFor = (p: CatalogDto) => ({
       productId: p.externalId || p.id,
@@ -289,24 +288,94 @@ export class SuppliersService {
       title: p.title,
     });
 
-    // List path: NEVER block on storefront HTML scrape. Use warm cache hits only,
-    // then return proxy URLs; warm B2B lookups in the background for next paint.
-    if (mode !== 'mock') {
-      const cached = applyCachedStorefrontImages(pageItems.map(hintFor));
-      if (cached.size) {
-        pageItems = pageItems.map((p) => {
-          if (p.imageUrl?.includes('arquivos.mercos.com')) return p;
-          const url = cached.get(p.externalId) ?? cached.get(p.id);
-          return url ? { ...p, imageUrl: url } : p;
-        });
+    const applyResolved = (
+      items: CatalogDto[],
+      resolved: Map<string, string>,
+    ) =>
+      items.map((p) => {
+        if (p.imageUrl?.includes('arquivos.mercos.com')) return p;
+        const url = resolved.get(p.externalId) ?? resolved.get(p.id);
+        return url ? { ...p, imageUrl: url } : p;
+      });
+
+    // Photo-first page: resolve B2B CDN for this window (+ extras to fill gaps).
+    // Skip HTML scrape here; keep a hard deadline so SSR stays usable.
+    let windowItems = products.slice(start, start + pageSize * 3);
+    if (mode !== 'mock' && windowItems.length) {
+      const cached = applyCachedStorefrontImages(windowItems.map(hintFor));
+      windowItems = applyResolved(windowItems, cached);
+
+      const need = windowItems
+        .filter((p) => !p.imageUrl?.includes('arquivos.mercos.com'))
+        .filter((p) => !isPreCadastroTitle(p.title));
+      if (need.length) {
+        try {
+          const resolved = await resolveStorefrontImageUrls(
+            need.map(hintFor),
+            { concurrency: 12, mode: 'fast', deadlineMs: 12_000 },
+          );
+          windowItems = applyResolved(windowItems, resolved);
+        } catch (err) {
+          console.warn('[suppliers] page B2B image resolve failed', err);
+        }
       }
+
+      // Warm the next slice in background for faster page flips.
+      const nextSlice = products.slice(
+        start + pageSize * 3,
+        start + pageSize * 5,
+      );
       warmStorefrontImageCache(
-        pageItems.filter((p) => !p.imageUrl?.includes('arquivos.mercos.com')).map(hintFor),
-        { concurrency: 10, mode: 'fast' },
+        nextSlice.filter((p) => !isPreCadastroTitle(p.title)).map(hintFor),
+        { concurrency: 8, mode: 'fast' },
       );
     }
 
-    // Prefer CDN; else absolute Dropmai proxy (streams CDN or SVG placeholder).
+    const withCdnNow = (p: CatalogDto) =>
+      Boolean(p.imageUrl && p.imageUrl.includes('arquivos.mercos.com'));
+
+    // Prefer cards that already have real CDN photos for the visible page.
+    const photoFirst = [
+      ...windowItems.filter(withCdnNow),
+      ...windowItems.filter((p) => !withCdnNow(p)),
+    ];
+    let pageItems = photoFirst.slice(0, pageSize);
+
+    // If still short on CDN cards, keep scanning further (bounded).
+    if (
+      mode !== 'mock' &&
+      pageItems.filter(withCdnNow).length < Math.min(pageSize, 12)
+    ) {
+      const extra = products.slice(start + pageSize * 3, start + pageSize * 6);
+      if (extra.length) {
+        try {
+          const resolved = await resolveStorefrontImageUrls(
+            extra
+              .filter((p) => !isPreCadastroTitle(p.title))
+              .map(hintFor),
+            { concurrency: 12, mode: 'fast', deadlineMs: 8_000 },
+          );
+          const enriched = applyResolved(extra, resolved).filter(withCdnNow);
+          const seen = new Set(pageItems.map((p) => p.id));
+          for (const p of enriched) {
+            if (seen.has(p.id)) continue;
+            // Replace trailing non-CDN slots first.
+            const idx = pageItems.findIndex((x) => !withCdnNow(x));
+            if (idx >= 0) {
+              pageItems[idx] = p;
+              seen.add(p.id);
+            } else if (pageItems.length < pageSize) {
+              pageItems.push(p);
+              seen.add(p.id);
+            }
+            if (pageItems.filter(withCdnNow).length >= pageSize) break;
+          }
+        } catch (err) {
+          console.warn('[suppliers] extra B2B image resolve failed', err);
+        }
+      }
+    }
+
     pageItems = pageItems.map((p) => ({
       ...p,
       imageHashes: [],
@@ -316,8 +385,7 @@ export class SuppliersService {
       }),
     }));
 
-    const withCdn = (p: CatalogDto) =>
-      Boolean(p.imageUrl && p.imageUrl.includes('arquivos.mercos.com'));
+    const withCdn = withCdnNow;
 
     const featuredPool: CatalogDto[] = [];
     const seenFeatured = new Set<string>();
@@ -330,30 +398,8 @@ export class SuppliersService {
       }
     };
     pushFeatured(pageItems.filter(withCdn));
+    pushFeatured(windowItems.filter(withCdn));
     pushFeatured(products.filter((p) => p.featured && withCdn(p)));
-    pushFeatured(pageItems);
-    pushFeatured(products.filter((p) => p.featured));
-
-    // Short B2B-only budget for Destaques — skip HTML scrape on list path.
-    const featuredNeed = featuredPool
-      .filter((p) => !withCdn(p))
-      .slice(0, 12);
-    if (featuredNeed.length && mode !== 'mock') {
-      try {
-        const resolved = await resolveStorefrontImageUrls(
-          featuredNeed.map(hintFor),
-          { concurrency: 8, mode: 'fast', deadlineMs: 2500 },
-        );
-        for (let i = 0; i < featuredPool.length; i++) {
-          const p = featuredPool[i];
-          if (withCdn(p)) continue;
-          const url = resolved.get(p.externalId) ?? resolved.get(p.id);
-          if (url) featuredPool[i] = { ...p, imageUrl: url };
-        }
-      } catch (err) {
-        console.warn('[suppliers] featured B2B image resolve failed', err);
-      }
-    }
 
     let featured = featuredPool
       .filter(withCdn)
@@ -367,23 +413,6 @@ export class SuppliersService {
           { sku: p.sku, title: p.title },
         ),
       }));
-
-    if (featured.length < 4) {
-      const fillers = pageItems
-        .filter(withCdn)
-        .filter((p) => !isPreCadastroTitle(p.title))
-        .filter((p) => !featured.some((f) => f.id === p.id))
-        .map((p) => ({
-          ...p,
-          imageHashes: [],
-          imageUrl: normalizeCatalogImageUrl(
-            p.imageUrl,
-            p.externalId || p.id,
-            { sku: p.sku, title: p.title },
-          ),
-        }));
-      featured = [...featured, ...fillers].slice(0, 8);
-    }
 
     const missingCdn = pageItems.filter((p) => !withCdn(p)).length;
     const warning =
@@ -408,7 +437,7 @@ export class SuppliersService {
       warning,
       imageGaps: {
         pageMissingCdn: missingCdn,
-        note: 'List uses cache+proxy (SVG fallback). CDN filled via B2B warm. Pré-cadastro deprioritized.',
+        note: 'Visible page sync-resolves B2B CDN (SKU/code/title match) and prefers photo-first cards.',
       },
     };
   }
