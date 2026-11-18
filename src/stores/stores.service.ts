@@ -109,11 +109,16 @@ export class StoresService {
       };
     }
 
-    const dbUser = await this.prisma.user.upsert({
-      where: { email: user.email },
-      create: { id: user.id, email: user.email, name: user.name },
-      update: { name: user.name },
-    });
+    // Prefer the authenticated user.id from the signed session (Google/email auth).
+    // Fall back to email upsert for legacy sessions.
+    let dbUser = await this.prisma.user.findUnique({ where: { id: user.id } });
+    if (!dbUser) {
+      dbUser = await this.prisma.user.upsert({
+        where: { email: user.email },
+        create: { id: user.id, email: user.email, name: user.name },
+        update: { name: user.name },
+      });
+    }
 
     const store = await this.prisma.store.create({
       data: {

@@ -3,25 +3,44 @@ import {
   Controller,
   Get,
   HttpCode,
+  HttpException,
   Post,
   Query,
   Req,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import { DEMO_USER, SESSION_COOKIE } from './auth.types';
+import { SESSION_COOKIE } from './auth.types';
+import { AuthService } from './auth.service';
 import {
+  clearSessionCookie,
+  decodeSession,
   isValidEmail,
   normalizeEmail,
-  sessionUserFromEmail,
   setSessionCookie,
 } from './auth.util';
 
+function exceptionMessage(err: unknown, fallback: string): string {
+  if (err instanceof HttpException) {
+    const body = err.getResponse();
+    if (typeof body === 'string') return body;
+    if (body && typeof body === 'object') {
+      const msg = (body as { message?: string | string[] }).message;
+      if (Array.isArray(msg)) return msg[0] || fallback;
+      if (typeof msg === 'string') return msg;
+    }
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 @Controller('api/v1/auth')
 export class AuthController {
+  constructor(private readonly auth: AuthService) {}
+
   @Post('login')
   @HttpCode(200)
-  login(
+  async login(
     @Body() body: { email?: string; password?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -39,14 +58,20 @@ export class AuthController {
       return { error: 'Informe a senha', field: 'password' };
     }
 
-    const user = sessionUserFromEmail(email);
-    setSessionCookie(res, user);
-    return { ok: true, user };
+    try {
+      const user = await this.auth.login(email, String(body.password));
+      const session = setSessionCookie(res, user);
+      return { ok: true, user, session };
+    } catch (err) {
+      const status = err instanceof HttpException ? err.getStatus() : 401;
+      res.status(status);
+      return { error: exceptionMessage(err, 'E-mail ou senha incorretos') };
+    }
   }
 
   @Post('register')
   @HttpCode(201)
-  register(
+  async register(
     @Body() body: { name?: string; email?: string; password?: string },
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -74,31 +99,35 @@ export class AuthController {
       };
     }
 
-    // Stub: no persistence yet — always "creates" and signs in
-    const user = sessionUserFromEmail(email, name);
-    setSessionCookie(res, user);
-    return { ok: true, created: true, user };
+    try {
+      const user = await this.auth.register(name, email, password);
+      const session = setSessionCookie(res, user);
+      return { ok: true, created: true, user, session };
+    } catch (err) {
+      const status = err instanceof HttpException ? err.getStatus() : 400;
+      res.status(status);
+      return {
+        error: exceptionMessage(err, 'Não foi possível criar a conta'),
+        field: status === 409 ? 'email' : undefined,
+      };
+    }
   }
 
   @Post('logout')
   logout(@Res({ passthrough: true }) res: Response) {
-    res.clearCookie(SESSION_COOKIE, { path: '/' });
+    clearSessionCookie(res);
     return { ok: true };
   }
 
   @Get('me')
   me(@Req() req: { cookies?: Record<string, string> }) {
-    const cookie = req.cookies?.[SESSION_COOKIE];
-    if (!cookie) {
-      return { user: null };
-    }
-    return { user: DEMO_USER };
+    const user = decodeSession(req.cookies?.[SESSION_COOKIE]);
+    return { user };
   }
 
   /**
    * Google OAuth start.
-   * If GOOGLE_CLIENT_ID (+ secret + redirect) are set, redirects to Google.
-   * Otherwise returns JSON documenting required envs (for UI stub button).
+   * Requires GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI.
    */
   @Get('google')
   googleStart(
@@ -115,8 +144,6 @@ export class AuthController {
       'https://dropmai.vercel.app';
 
     if (!clientId || !clientSecret || !redirectUri.startsWith('http')) {
-      // Stub: bounce back to login with a clear query flag (UI still ships the button).
-      // Required envs: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI, FRONTEND_URL
       const accept = String(
         (res.req as { headers?: { accept?: string } }).headers?.accept || '',
       );
@@ -131,6 +158,9 @@ export class AuthController {
             'GOOGLE_CLIENT_SECRET',
             'GOOGLE_REDIRECT_URI',
             'FRONTEND_URL',
+            'SESSION_SECRET',
+            'DATABASE_URL',
+            'DROPMAI_USE_MOCK',
           ],
         });
       }
@@ -159,7 +189,7 @@ export class AuthController {
   }
 
   @Get('google/callback')
-  googleCallback(
+  async googleCallback(
     @Query('code') code: string | undefined,
     @Query('state') state: string | undefined,
     @Query('error') error: string | undefined,
@@ -187,13 +217,20 @@ export class AuthController {
       );
     }
 
-    // Stub: exchange not implemented without full Google token plumbing.
-    // Sign in as demo Google user so the button path works end-to-end in staging.
-    const user = sessionUserFromEmail(
-      'google-user@dropmai.com.br',
-      'Conta Google',
-    );
-    setSessionCookie(res, user);
-    return res.redirect(returnTo);
+    try {
+      const user = await this.auth.loginWithGoogleCode(code);
+      const session = setSessionCookie(res, user);
+      // Bridge via URL hash so the session token is not sent to frontend logs/Referer.
+      const bridge = new URL(`${frontend}/auth/callback`);
+      bridge.hash = new URLSearchParams({
+        session,
+        returnTo,
+      }).toString();
+      return res.redirect(bridge.toString());
+    } catch {
+      return res.redirect(
+        `${frontend}/entrar?error=${encodeURIComponent('google_failed')}`,
+      );
+    }
   }
 }

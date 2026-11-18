@@ -4,7 +4,8 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { DEMO_USER, SESSION_COOKIE, SessionUser } from './auth.types';
+import { SESSION_COOKIE, type SessionUser } from './auth.types';
+import { decodeSession } from './auth.util';
 
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -18,20 +19,17 @@ export class AuthGuard implements CanActivate {
     const cookie = req.cookies?.[SESSION_COOKIE];
     const header = req.headers['x-dropmai-user'];
 
-    if (cookie === 'demo' || cookie === DEMO_USER.id || header === 'demo') {
-      req.user = DEMO_USER;
+    const fromCookie = decodeSession(cookie);
+    if (fromCookie) {
+      req.user = fromCookie;
       return true;
     }
 
-    if (cookie) {
-      try {
-        const parsed = JSON.parse(cookie) as SessionUser;
-        if (parsed?.email) {
-          req.user = parsed;
-          return true;
-        }
-      } catch {
-        req.user = DEMO_USER;
+    // Optional debug/header override: pass a signed session token, not "demo"
+    if (header) {
+      const fromHeader = decodeSession(header);
+      if (fromHeader) {
+        req.user = fromHeader;
         return true;
       }
     }

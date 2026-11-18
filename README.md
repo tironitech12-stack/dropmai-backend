@@ -6,7 +6,8 @@ API NestJS + Prisma/PostgreSQL da plataforma Dropmai (separada do frontend).
 
 - NestJS 11 + TypeScript
 - Prisma 6 + PostgreSQL
-- Auth stub (cookie `dropmai_session`)
+- Auth com cookie assinado `dropmai_session` (`dm1.<payload>.<hmac>`)
+- Google OAuth (troca de `code` → tokens → userinfo → upsert `User`/`Account`)
 - Sync Xnamai via Mercos_Adaptor (preferido) ou BI Backend
 
 ## Rodar
@@ -19,28 +20,49 @@ npm run start:dev
 
 Health: `GET http://localhost:4000/health`
 
-Sem Postgres, deixe `DROPMAI_USE_MOCK=true` (lojas/produtos em memória + mock Xnamai).
+Sem Postgres, deixe `DROPMAI_USE_MOCK=true` (lojas/produtos em memória + mock Xnamai). Login/register/Google ainda emitem sessão assinada, mas **não** gravam `User` no banco.
 
-### Com PostgreSQL
+### Com PostgreSQL (persistência real)
 
 ```bash
-# ajuste DATABASE_URL e DROPMAI_USE_MOCK=false
+# DATABASE_URL real + DROPMAI_USE_MOCK=false
 npx prisma migrate deploy
-npx prisma db seed   # quando configurado
 npm run start:dev
 ```
+
+Com DB ativo:
+
+- `POST /api/v1/auth/register` cria `User` com `passwordHash` (scrypt)
+- `POST /api/v1/auth/login` valida hash e devolve sessão com `user.id` real
+- `GET /api/v1/auth/google/callback` troca o code, upsert `User` + `Account(provider=google)` e redireciona ao frontend `/auth/callback?session=...`
+- Lojas usam `StoreMember.userId` = esse `user.id`
+
+## Variáveis de ambiente
+
+| Var | Obrigatória | Notas |
+|---|---|---|
+| `DATABASE_URL` | para persistir | Postgres. Placeholder `USER:PASSWORD@` é ignorado salvo `DROPMAI_FORCE_DB=true` |
+| `DROPMAI_USE_MOCK` | recomendada | `false` para gravar User/Account/StoreMember |
+| `SESSION_SECRET` | produção | HMAC das sessões; sem ela cai no secret de dev |
+| `FRONTEND_URL` | OAuth | ex. `https://dropmai.vercel.app` |
+| `PUBLIC_API_URL` | OAuth | ex. `https://dropmai-backend.onrender.com` |
+| `GOOGLE_CLIENT_ID` | Google | Console Google Cloud |
+| `GOOGLE_CLIENT_SECRET` | Google | |
+| `GOOGLE_REDIRECT_URI` | Google | deve bater com a URI autorizada |
+| `CORS_ORIGINS` | opcional | merge com localhost + dropmai.vercel.app |
+| `MERCOS_ADAPTOR_*` / `XNAMAI_BI_*` | sync | ver seção Sync |
 
 ## Rotas principais
 
 | Método | Rota | Auth |
 |---|---|---|
 | GET | `/health` | — |
-| POST | `/api/v1/auth/login` | — |
-| POST | `/api/v1/auth/register` | — (stub) |
-| GET | `/api/v1/auth/google` | OAuth start (501 stub se envs ausentes) |
-| GET | `/api/v1/auth/google/callback` | OAuth callback stub |
-| GET | `/api/v1/auth/me` | cookie |
-| GET/POST | `/api/v1/stores` | sim |
+| POST | `/api/v1/auth/login` | — (persiste/lê User se DB) |
+| POST | `/api/v1/auth/register` | — (cria User se DB) |
+| GET | `/api/v1/auth/google` | OAuth start (501 se envs ausentes) |
+| GET | `/api/v1/auth/google/callback` | troca code + upsert + bridge session |
+| GET | `/api/v1/auth/me` | cookie assinado |
+| GET/POST | `/api/v1/stores` | sim (`user.id` / StoreMember) |
 | GET | `/api/v1/stores/:id/products` | sim |
 | POST | `/api/v1/sync/xnamai` | sim |
 | GET/POST | `/api/v1/stores/:id/domains` | sim |
@@ -64,9 +86,17 @@ No Render, defina (ou confirme):
 
 ```text
 CORS_ORIGINS=https://dropmai.vercel.app,http://localhost:3000
+DROPMAI_USE_MOCK=false
+DATABASE_URL=postgresql://...
+SESSION_SECRET=<longo-aleatorio>
+FRONTEND_URL=https://dropmai.vercel.app
+PUBLIC_API_URL=https://dropmai-backend.onrender.com
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=https://dropmai-backend.onrender.com/api/v1/auth/google/callback
 ```
 
-Origens extras (previews Vercel) podem ser acrescentadas na mesma variável, separadas por vírgula. O código faz merge com os defaults acima.
+Origens extras (previews Vercel) podem ser acrescentadas em `CORS_ORIGINS`.
 
 ## Render
 
