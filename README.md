@@ -36,6 +36,9 @@ npm run start:dev
 |---|---|---|
 | GET | `/health` | — |
 | POST | `/api/v1/auth/login` | — |
+| POST | `/api/v1/auth/register` | — (stub) |
+| GET | `/api/v1/auth/google` | OAuth start (501 stub se envs ausentes) |
+| GET | `/api/v1/auth/google/callback` | OAuth callback stub |
 | GET | `/api/v1/auth/me` | cookie |
 | GET/POST | `/api/v1/stores` | sim |
 | GET | `/api/v1/stores/:id/products` | sim |
