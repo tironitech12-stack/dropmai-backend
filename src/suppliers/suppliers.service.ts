@@ -324,17 +324,55 @@ export class SuppliersService {
     pushFeatured(
       products.filter((p) => p.featured && !isPreCadastroTitle(p.title)),
     );
-    pushFeatured(pageItems);
+    pushFeatured(pageItems.filter((p) => !isPreCadastroTitle(p.title)));
     pushFeatured(products.filter((p) => !isPreCadastroTitle(p.title)));
 
-    let featured = featuredPool.slice(0, 12).map((p) => ({
-      ...p,
-      imageUrl: normalizeCatalogImageUrl(
-        p.imageUrl,
-        p.externalId || p.id,
-        { sku: p.sku, title: p.title },
-      ),
-    }));
+    // Resolve CDN for featured candidates that still lack arquivos.mercos URLs
+    const featuredNeed = featuredPool
+      .filter((p) => !withCdn(p))
+      .slice(0, 16);
+    if (featuredNeed.length && mode !== 'mock') {
+      try {
+        const resolved = await resolveStorefrontImageUrls(
+          featuredNeed.map((p) => ({
+            productId: p.externalId || p.id,
+            sku: p.sku,
+            title: p.title,
+          })),
+          { concurrency: 5 },
+        );
+        for (let i = 0; i < featuredPool.length; i++) {
+          const p = featuredPool[i];
+          if (withCdn(p)) continue;
+          const url = resolved.get(p.externalId) ?? resolved.get(p.id);
+          if (url) featuredPool[i] = { ...p, imageUrl: url };
+        }
+      } catch (err) {
+        console.warn('[suppliers] featured B2B image resolve failed', err);
+      }
+    }
+
+    // Destaques must show real photos — drop candidates still without CDN.
+    let featured = featuredPool
+      .filter(withCdn)
+      .slice(0, 12)
+      .map((p) => ({
+        ...p,
+        imageUrl: normalizeCatalogImageUrl(
+          p.imageUrl,
+          p.externalId || p.id,
+          { sku: p.sku, title: p.title },
+        ),
+      }));
+
+    if (featured.length < 6) {
+      featured = [
+        ...featured,
+        ...pageItems
+          .filter(withCdn)
+          .filter((p) => !featured.some((f) => f.id === p.id)),
+      ].slice(0, 12);
+    }
 
     const missingCdn = pageItems.filter((p) => !withCdn(p)).length;
     const warning =
