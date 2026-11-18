@@ -19,6 +19,105 @@ export class SuppliersService {
     return Array.from(this.memoryCatalog.values());
   }
 
+  /**
+   * List Xnamai supplier products for the merchant panel.
+   * Prefers Dropmai DB catalog when configured; otherwise live adapter
+   * (Mercos adaptor → Xnamai BI → mock). Filters stock > 0 by default.
+   */
+  async listXnamaiProducts(options?: {
+    inStock?: boolean;
+    limit?: number;
+    forceMock?: boolean;
+  }): Promise<{
+    products: Array<{
+      id: string;
+      externalId: string;
+      sku: string | null;
+      title: string;
+      stock: number;
+      costPrice: number;
+      categoryName: string | null;
+      imageUrl: string | null;
+      active: boolean;
+    }>;
+    mode: 'live' | 'mock' | 'db';
+    source: string;
+    inStock: boolean;
+    total: number;
+  }> {
+    const inStock = options?.inStock !== false;
+    const limit = Math.min(Math.max(options?.limit ?? 200, 1), 500);
+
+    if (isDatabaseConfigured()) {
+      try {
+        const rows = await this.prisma.product.findMany({
+          where: {
+            supplier: { code: 'xnamai' },
+            ...(inStock ? { stock: { gt: 0 } } : {}),
+          },
+          orderBy: [{ title: 'asc' }],
+          take: limit,
+        });
+        if (rows.length > 0) {
+          const products = rows.map((p) => ({
+            id: p.id,
+            externalId: p.externalId,
+            sku: p.sku,
+            title: p.title,
+            stock: Number(p.stock),
+            costPrice: Number(p.costPrice),
+            categoryName: p.categoryName,
+            imageUrl: p.imageUrls?.[0] ?? null,
+            active: p.active,
+          }));
+          return {
+            products,
+            mode: 'db',
+            source: 'dropmai-db',
+            inStock,
+            total: products.length,
+          };
+        }
+      } catch (err) {
+        console.warn('[suppliers] db list failed, falling back to adapter', err);
+      }
+    }
+
+    const adapter = new XnamaiCatalogAdapter({
+      forceMock: options?.forceMock,
+    });
+    const fetched = await adapter.fetchProducts({
+      limit: Math.max(limit, 200),
+    });
+    for (const p of fetched.products) {
+      this.memoryCatalog.set(p.externalId, p);
+    }
+
+    let products = fetched.products;
+    if (inStock) {
+      products = products.filter((p) => Number(p.stock) > 0);
+    }
+    products = products.slice(0, limit);
+
+    return {
+      products: products.map((p) => ({
+        id: p.externalId,
+        externalId: p.externalId,
+        sku: p.sku ?? null,
+        title: p.title,
+        stock: Number(p.stock),
+        costPrice: Number(p.costPrice),
+        categoryName: p.categoryName ?? null,
+        imageUrl: p.imageUrls?.[0] ?? null,
+        active: p.active,
+      })),
+      mode: fetched.mode,
+      source: fetched.source,
+      inStock,
+      total: products.length,
+    };
+  }
+
   async syncXnamai(options?: {
     limit?: number;
     forceMock?: boolean;

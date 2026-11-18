@@ -13,7 +13,9 @@ export const MOCK_XNAMAI_PRODUCTS: SupplierProduct[] = [
     minimumPrice: 10.5,
     stock: 240,
     ncm: '85444200',
-    imageUrls: [],
+    imageUrls: [
+      'https://images.unsplash.com/photo-1583863788434-e58a36330cf0?w=120&h=120&fit=crop',
+    ],
     imageHashes: [],
     active: true,
     sourceUpdatedAt: '2026-11-01T12:00:00Z',
@@ -29,6 +31,9 @@ export const MOCK_XNAMAI_PRODUCTS: SupplierProduct[] = [
     costPrice: 48.0,
     minimumPrice: 42.0,
     stock: 85,
+    imageUrls: [
+      'https://images.unsplash.com/photo-1590658268037-6bf12165a8df?w=120&h=120&fit=crop',
+    ],
     active: true,
     sourceUpdatedAt: '2026-11-05T09:30:00Z',
     raw: { codigo: 'XN-FONE-BT', origem: 'mock' },
