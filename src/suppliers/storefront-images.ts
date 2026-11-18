@@ -105,22 +105,25 @@ async function fetchHtml(url: string, attempt: number): Promise<string | null> {
   }
 }
 
+/** Mercos-style product codes: BWB-006, CB-55, ICA-2405, LL-00 (letter+digit). */
+function productCodeFromTitle(title: string | null | undefined): string | null {
+  const t = title?.trim();
+  if (!t) return null;
+  const m = t.match(/^[A-Z]{1,8}[-_/]?[A-Z0-9]{1,12}/i);
+  if (!m) return null;
+  const code = m[0].replace(/[-_/]+$/, '');
+  // Require at least one digit so "Pacote" / "Copo" / "PRE" never become search keys.
+  if (!/\d/.test(code)) return null;
+  if (/^pr[eé]/i.test(code)) return null;
+  return code;
+}
+
 function searchQueries(hint: ImageResolveHint): string[] {
   const out: string[] = [];
   const sku = hint.sku?.trim();
   if (sku) out.push(sku);
-  const title = hint.title?.trim();
-  if (title) {
-    const code = title.match(/^[A-Z0-9][A-Z0-9._/-]{1,24}/i)?.[0];
-    if (code && code.toLowerCase() !== sku?.toLowerCase()) out.push(code);
-    const words = title
-      .replace(/["'“”]/g, ' ')
-      .split(/\s+/)
-      .filter((w) => w.length > 2)
-      .slice(0, 4)
-      .join(' ');
-    if (words) out.push(words);
-  }
+  const code = productCodeFromTitle(hint.title);
+  if (code && code.toLowerCase() !== sku?.toLowerCase()) out.push(code);
   return [...new Set(out.filter(Boolean))];
 }
 
@@ -153,22 +156,38 @@ async function resolveFromB2bApi(hint: ImageResolveHint): Promise<string | null>
       const fromExact = firstImageFromPayload(exact);
       if (fromExact) return fromExact;
 
-      // Prefer row whose codigo matches SKU
+      // Prefer row whose codigo matches SKU (never take an unrelated first hit —
+      // that stamped wrong photos onto Destaques).
       if (hint.sku) {
-        const bySku = list.find(
-          (row) =>
-            row &&
-            typeof row === 'object' &&
-            String((row as Record<string, unknown>).codigo ?? '')
-              .toLowerCase() === hint.sku!.trim().toLowerCase(),
-        );
+        const skuNorm = hint.sku.trim().toLowerCase();
+        const bySku = list.find((row) => {
+          if (!row || typeof row !== 'object') return false;
+          const r = row as Record<string, unknown>;
+          const codigo = String(r.codigo ?? '').toLowerCase();
+          const nome = String(r.nome ?? r.name ?? '').toLowerCase();
+          return codigo === skuNorm || nome.startsWith(skuNorm);
+        });
         const fromSku = firstImageFromPayload(bySku);
         if (fromSku) return fromSku;
       }
 
-      for (const row of list.slice(0, 8)) {
-        const url = firstImageFromPayload(row);
-        if (url) return url;
+      // Title product code (e.g. BWB-006) vs list codigo / nome prefix
+      const titleCode = productCodeFromTitle(hint.title);
+      if (titleCode) {
+        const codeNorm = titleCode.toLowerCase();
+        const byCode = list.find((row) => {
+          if (!row || typeof row !== 'object') return false;
+          const r = row as Record<string, unknown>;
+          const codigo = String(r.codigo ?? '').toLowerCase();
+          const nome = String(r.nome ?? r.name ?? '').toLowerCase();
+          return (
+            codigo === codeNorm ||
+            nome.startsWith(codeNorm) ||
+            nome.includes(codeNorm)
+          );
+        });
+        const fromCode = firstImageFromPayload(byCode);
+        if (fromCode) return fromCode;
       }
     }
   }

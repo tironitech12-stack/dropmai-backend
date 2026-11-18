@@ -315,17 +315,16 @@ export class SuppliersService {
     const pushFeatured = (list: CatalogDto[]) => {
       for (const p of list) {
         if (seenFeatured.has(p.id)) continue;
-        if (isPreCadastroTitle(p.title) && !withCdn(p)) continue;
+        // Never put pré-cadastro in Destaques (even if a wrong CDN was matched).
+        if (isPreCadastroTitle(p.title)) continue;
         seenFeatured.add(p.id);
         featuredPool.push(p);
       }
     };
     pushFeatured(pageItems.filter(withCdn));
-    pushFeatured(
-      products.filter((p) => p.featured && !isPreCadastroTitle(p.title)),
-    );
-    pushFeatured(pageItems.filter((p) => !isPreCadastroTitle(p.title)));
-    pushFeatured(products.filter((p) => !isPreCadastroTitle(p.title)));
+    pushFeatured(products.filter((p) => p.featured));
+    pushFeatured(pageItems);
+    pushFeatured(products);
 
     // Resolve CDN for featured candidates that still lack arquivos.mercos URLs
     const featuredNeed = featuredPool
@@ -368,6 +367,7 @@ export class SuppliersService {
     if (featured.length < 6) {
       const fillers = pageItems
         .filter(withCdn)
+        .filter((p) => !isPreCadastroTitle(p.title))
         .filter((p) => !featured.some((f) => f.id === p.id))
         .map((p) => ({
           ...p,
