@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
+import { resolveStorefrontImageUrls } from './storefront-images';
 import type { SupplierProduct, SupplierSyncResult } from './types';
 import { XnamaiCatalogAdapter } from './xnamai.adapter';
 
@@ -267,13 +268,35 @@ export class SuppliersService {
     const total = products.length;
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const start = (page - 1) * pageSize;
-    const pageItems = products.slice(start, start + pageSize);
+    let pageItems = products.slice(start, start + pageSize);
+
+    // Mercos API gives SHA-512 hashes only; public storefront pages expose CDN URLs.
+    const needImages = [...pageItems, ...featured].filter((p) => !p.imageUrl);
+    if (needImages.length && mode !== 'mock') {
+      try {
+        const resolved = await resolveStorefrontImageUrls(
+          needImages.map((p) => p.externalId || p.id),
+        );
+        if (resolved.size) {
+          const apply = (list: CatalogDto[]) =>
+            list.map((p) => {
+              if (p.imageUrl) return p;
+              const url = resolved.get(p.externalId) ?? resolved.get(p.id);
+              return url ? { ...p, imageUrl: url } : p;
+            });
+          pageItems = apply(pageItems);
+          featured = apply(featured);
+        }
+      } catch (err) {
+        console.warn('[suppliers] storefront image resolve failed', err);
+      }
+    }
 
     const warning =
       mode === 'mock'
         ? 'Catálogo mock ativo. Configure MERCOS_ADAPTOR_API_KEY ou XNAMAI_BI_API_KEY (e DROPMAI_USE_MOCK=false) no Render.'
         : pageItems.every((p) => !p.imageUrl)
-          ? 'Mercos entrega hashes de imagem, não URLs públicas. Defina MERCOS_IMAGE_URL_TEMPLATE se houver CDN, ou estenda o Adaptor para imagens.'
+          ? 'Sem fotos nesta página. Confira XNAMAI_STOREFRONT_URL (padrão https://xnamai.mercos.com) no Render.'
           : undefined;
 
     return {
@@ -281,7 +304,9 @@ export class SuppliersService {
       featured,
       categories,
       mode,
-      source,
+      source: pageItems.some((p) => p.imageUrl)
+        ? `${source}+storefront-images`
+        : source,
       inStock,
       page,
       pageSize,
