@@ -34,7 +34,7 @@ Com DB ativo:
 
 - `POST /api/v1/auth/register` cria `User` com `passwordHash` (scrypt)
 - `POST /api/v1/auth/login` valida hash e devolve sessão com `user.id` real
-- `GET /api/v1/auth/google/callback` troca o code, upsert `User` + `Account(provider=google)` e redireciona ao frontend `/auth/callback?session=...`
+- `GET /api/v1/auth/google/callback` troca o code, upsert `User` + `Account(provider=google)` e redireciona ao frontend `/auth/callback#session=...`
 - Lojas usam `StoreMember.userId` = esse `user.id`
 
 ## Variáveis de ambiente
