@@ -18,6 +18,7 @@ type CatalogDto = {
   externalId: string;
   sku: string | null;
   title: string;
+  description: string | null;
   stock: number;
   costPrice: number;
   categoryId: string | null;
@@ -70,6 +71,7 @@ export class SuppliersService {
       externalId: p.externalId,
       sku: p.sku ?? null,
       title: p.title,
+      description: p.description?.trim() || null,
       stock: Number(p.stock),
       costPrice: Number(p.costPrice),
       categoryId,
@@ -224,6 +226,7 @@ export class SuppliersService {
             externalId: p.externalId,
             sku: p.sku,
             title: p.title,
+            description: p.description?.trim() || null,
             stock: Number(p.stock),
             costPrice: Number(p.costPrice),
             categoryId: p.categoryExternalId,
