@@ -32,6 +32,8 @@ export type ThemeSettings = {
   home: {
     sections: ThemeSection[];
   };
+  /** Puck visual editor page JSON */
+  puck?: unknown;
 };
 
 export type ThemeDefinition = {
@@ -244,6 +246,9 @@ export function mergeThemeSettings(
     }
     for (const s of byId.values()) ordered.push(s);
     next.home.sections = ordered;
+  }
+  if ('puck' in p) {
+    next.puck = (p as ThemeSettings).puck;
   }
   return next;
 }
