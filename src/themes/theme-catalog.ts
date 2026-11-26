@@ -42,6 +42,7 @@ export type ThemeDefinition = {
   tagline: string;
   free: true;
   previewAccent: string;
+  previewAccent2?: string;
   defaultSettings: ThemeSettings;
 };
 
@@ -49,12 +50,17 @@ function baseSections(overrides?: {
   heroTitle?: string;
   heroSubtitle?: string;
   announcement?: string;
+  announcementEnabled?: boolean;
+  featuredTitle?: string;
+  featuredLimit?: number;
+  ctaLabel?: string;
+  footerText?: string;
 }): ThemeSection[] {
   return [
     {
       id: 'announcement',
       type: 'announcement',
-      enabled: true,
+      enabled: overrides?.announcementEnabled ?? true,
       props: {
         text:
           overrides?.announcement ??
@@ -70,7 +76,7 @@ function baseSections(overrides?: {
         subtitle:
           overrides?.heroSubtitle ??
           'Produtos Xnamai publicados com o seu markup.',
-        ctaLabel: 'Ver produtos',
+        ctaLabel: overrides?.ctaLabel ?? 'Ver produtos',
         ctaHref: '#produtos',
         imageUrl: '',
       },
@@ -80,8 +86,8 @@ function baseSections(overrides?: {
       type: 'featured_products',
       enabled: true,
       props: {
-        title: 'Destaques',
-        limit: 12,
+        title: overrides?.featuredTitle ?? 'Destaques',
+        limit: overrides?.featuredLimit ?? 12,
       },
     },
     {
@@ -89,7 +95,7 @@ function baseSections(overrides?: {
       type: 'footer',
       enabled: true,
       props: {
-        text: 'Loja powered by Dropmai',
+        text: overrides?.footerText ?? 'Loja powered by Dropmai',
       },
     },
   ];
@@ -99,22 +105,23 @@ export const THEME_CATALOG: ThemeDefinition[] = [
   {
     id: 'vitrine',
     name: 'Vitrine',
-    tagline: 'Hero amplo e grade de produtos — ideal para começar.',
+    tagline: 'Hero amplo e vitrine de marca — ideal para loja própria.',
     free: true,
-    previewAccent: '#0f8a6b',
+    previewAccent: '#0d9488',
+    previewAccent2: '#134e4a',
     defaultSettings: {
       brand: {
         name: '',
         logoUrl: null,
-        tagline: 'Loja Dropmai',
+        tagline: 'Loja própria',
       },
       colors: {
-        primary: '#0f8a6b',
-        secondary: '#0a5c49',
-        background: '#f4f7f9',
+        primary: '#0d9488',
+        secondary: '#134e4a',
+        background: '#f0f7f6',
         surface: '#ffffff',
-        text: '#15202b',
-        muted: '#5b6b7c',
+        text: '#134e4a',
+        muted: '#5b7c78',
       },
       typography: {
         heading: 'Georgia, "Times New Roman", serif',
@@ -123,7 +130,10 @@ export const THEME_CATALOG: ThemeDefinition[] = [
       home: {
         sections: baseSections({
           heroTitle: 'Novidades da sua vitrine',
-          heroSubtitle: 'Publique do catálogo Xnamai e venda no seu domínio.',
+          heroSubtitle:
+            'Publique do catálogo Xnamai e venda no seu domínio com a sua marca.',
+          announcement: 'Novidades toda semana · Frete no checkout',
+          ctaLabel: 'Explorar vitrine',
         }),
       },
     },
@@ -131,9 +141,10 @@ export const THEME_CATALOG: ThemeDefinition[] = [
   {
     id: 'minimal',
     name: 'Minimal',
-    tagline: 'Limpo e tipográfico — foco no catálogo.',
+    tagline: 'Limpo e tipográfico — pouco ruído, foco no produto.',
     free: true,
-    previewAccent: '#1c1917',
+    previewAccent: '#292524',
+    previewAccent2: '#a8a29e',
     defaultSettings: {
       brand: {
         name: '',
@@ -141,8 +152,8 @@ export const THEME_CATALOG: ThemeDefinition[] = [
         tagline: '',
       },
       colors: {
-        primary: '#1c1917',
-        secondary: '#44403c',
+        primary: '#292524',
+        secondary: '#57534e',
         background: '#fafaf9',
         surface: '#ffffff',
         text: '#1c1917',
@@ -154,9 +165,12 @@ export const THEME_CATALOG: ThemeDefinition[] = [
       },
       home: {
         sections: baseSections({
-          heroTitle: 'Catálogo',
-          heroSubtitle: 'Seleção objetiva. Sem ruído.',
+          heroTitle: 'Seleção',
+          heroSubtitle: 'Objetiva. Sem ruído. Só o essencial.',
           announcement: 'Envio sob demanda',
+          announcementEnabled: false,
+          featuredTitle: 'Catálogo',
+          ctaLabel: 'Ver tudo',
         }),
       },
     },
@@ -164,9 +178,10 @@ export const THEME_CATALOG: ThemeDefinition[] = [
   {
     id: 'catalogo',
     name: 'Catálogo',
-    tagline: 'Visual denso para muitas SKUs e preço em evidência.',
+    tagline: 'Grade densa e preço em evidência — muitas SKUs / B2B.',
     free: true,
-    previewAccent: '#1d4ed8',
+    previewAccent: '#2563eb',
+    previewAccent2: '#1e3a8a',
     defaultSettings: {
       brand: {
         name: '',
@@ -174,7 +189,7 @@ export const THEME_CATALOG: ThemeDefinition[] = [
         tagline: 'Atacado e varejo',
       },
       colors: {
-        primary: '#1d4ed8',
+        primary: '#2563eb',
         secondary: '#1e3a8a',
         background: '#eef2ff',
         surface: '#ffffff',
@@ -188,13 +203,135 @@ export const THEME_CATALOG: ThemeDefinition[] = [
       home: {
         sections: baseSections({
           heroTitle: 'Pronto para pedir',
-          heroSubtitle: 'Preços da sua loja sobre o custo do fornecedor.',
+          heroSubtitle:
+            'Lista compacta com preço da sua loja sobre o custo do fornecedor.',
           announcement: 'Estoque atualizado com o fornecedor',
+          featuredTitle: 'Lista de produtos',
+          featuredLimit: 24,
+          ctaLabel: 'Ver catálogo',
+        }),
+      },
+    },
+  },
+  {
+    id: 'boutique',
+    name: 'Boutique',
+    tagline: 'Sofisticado e editorial — moda, beleza e lifestyle.',
+    free: true,
+    previewAccent: '#9f1239',
+    previewAccent2: '#fce7f3',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'Coleção da temporada',
+      },
+      colors: {
+        primary: '#9f1239',
+        secondary: '#881337',
+        background: '#fff5f8',
+        surface: '#ffffff',
+        text: '#4c0519',
+        muted: '#9f6b7c',
+      },
+      typography: {
+        heading: '"Palatino Linotype", Palatino, Georgia, serif',
+        body: 'Georgia, "Times New Roman", serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'Peças com presença',
+          heroSubtitle:
+            'Curadoria visual para marcas que querem parecer boutique.',
+          announcement: 'Edição limitada · Envio cuidadoso',
+          featuredTitle: 'Em destaque',
+          featuredLimit: 8,
+          ctaLabel: 'Ver coleção',
+          footerText: 'Boutique powered by Dropmai',
+        }),
+      },
+    },
+  },
+  {
+    id: 'urbano',
+    name: 'Urbano',
+    tagline: 'Street e contraste alto — drop, sneaker e cultura jovem.',
+    free: true,
+    previewAccent: '#fb923c',
+    previewAccent2: '#0a0a0a',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'Drop semanal',
+      },
+      colors: {
+        primary: '#fb923c',
+        secondary: '#ea580c',
+        background: '#0a0a0a',
+        surface: '#171717',
+        text: '#fafafa',
+        muted: '#a3a3a3',
+      },
+      typography: {
+        heading: 'ui-sans-serif, system-ui, sans-serif',
+        body: 'ui-sans-serif, system-ui, sans-serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'Novo drop',
+          heroSubtitle: 'Peças com atitude. Markup seu. Estoque no fornecedor.',
+          announcement: 'Restock alert · Frete no checkout',
+          featuredTitle: 'No radar',
+          ctaLabel: 'Shop now',
+          footerText: 'Urbano · Dropmai',
+        }),
+      },
+    },
+  },
+  {
+    id: 'solar',
+    name: 'Solar',
+    tagline: 'Varejo alegre e solar — casa, kids e presentes.',
+    free: true,
+    previewAccent: '#ea580c',
+    previewAccent2: '#fbbf24',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'Feito para o dia a dia',
+      },
+      colors: {
+        primary: '#ea580c',
+        secondary: '#c2410c',
+        background: '#fff7ed',
+        surface: '#ffffff',
+        text: '#7c2d12',
+        muted: '#b45309',
+      },
+      typography: {
+        heading: '"Trebuchet MS", "Segoe UI", sans-serif',
+        body: 'system-ui, -apple-system, Segoe UI, sans-serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'Achados com sol',
+          heroSubtitle:
+            'Vitrine quente e amigável para quem vende volume no varejo.',
+          announcement: 'Ofertas da semana · Entrega sob demanda',
+          featuredTitle: 'Mais pedidos',
+          ctaLabel: 'Ver ofertas',
+          footerText: 'Solar · Dropmai',
         }),
       },
     },
   },
 ];
+
+export function isKnownThemeId(themeId: string): boolean {
+  return THEME_CATALOG.some((t) => t.id === themeId);
+}
 
 export function getThemeDefinition(themeId: string): ThemeDefinition {
   return (
@@ -238,7 +375,6 @@ export function mergeThemeSettings(
         props: { ...(prev?.props ?? {}), ...(section.props ?? {}) },
       });
     }
-    // Keep known order from base, then extras
     const ordered: ThemeSection[] = [];
     for (const s of next.home.sections) {
       ordered.push(byId.get(s.id)!);
