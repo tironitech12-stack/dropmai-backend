@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Store" ADD COLUMN IF NOT EXISTS "themeId" TEXT NOT NULL DEFAULT 'vitrine';
+ALTER TABLE "Store" ADD COLUMN IF NOT EXISTS "themeSettings" JSONB;

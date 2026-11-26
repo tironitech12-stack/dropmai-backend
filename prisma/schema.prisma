@@ -86,14 +86,18 @@ model Account {
 }
 
 model Store {
-  id          String      @id @default(cuid())
-  slug        String      @unique // subdomain: {slug}.dropmai.com.br
-  name        String
-  status      StoreStatus @default(DRAFT)
-  description String?
-  logoUrl     String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id            String      @id @default(cuid())
+  slug          String      @unique // subdomain: {slug}.dropmai.com.br
+  name          String
+  status        StoreStatus @default(DRAFT)
+  description   String?
+  logoUrl       String?
+  /// Dropmai first-party theme id (minimal | vitrine | catalogo)
+  themeId       String      @default("vitrine")
+  /// Published branding + home sections JSON
+  themeSettings Json?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   members             StoreMember[]
   customDomains       CustomDomain[]

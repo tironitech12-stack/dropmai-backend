@@ -4,17 +4,24 @@ import {
   Get,
   NotFoundException,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import type { SessionUser } from '../auth/auth.types';
+import type { ThemeSettings } from '../themes/theme-catalog';
 import { StoresService } from './stores.service';
 
 @Controller('api/v1')
 export class StoresController {
   constructor(private readonly stores: StoresService) {}
+
+  @Get('themes')
+  listThemes() {
+    return { themes: this.stores.listThemes() };
+  }
 
   @Get('stores')
   @UseGuards(AuthGuard)
@@ -48,6 +55,45 @@ export class StoresController {
   ) {
     const store = await this.stores.getById(storeId, req.user);
     if (!store) throw new NotFoundException('Loja não encontrada');
+    return { store };
+  }
+
+  @Post('stores/:storeId/theme/apply')
+  @UseGuards(AuthGuard)
+  async applyTheme(
+    @Req() req: { user: SessionUser },
+    @Param('storeId') storeId: string,
+    @Body() body: { themeId?: string; keepCustomBrand?: boolean },
+  ) {
+    if (!body.themeId?.trim()) {
+      return { error: 'themeId obrigatório' };
+    }
+    const store = await this.stores.applyTheme(
+      storeId,
+      req.user,
+      body.themeId.trim(),
+      body.keepCustomBrand !== false,
+    );
+    return { store };
+  }
+
+  @Patch('stores/:storeId/theme')
+  @UseGuards(AuthGuard)
+  async patchTheme(
+    @Req() req: { user: SessionUser },
+    @Param('storeId') storeId: string,
+    @Body()
+    body: {
+      themeId?: string;
+      themeSettings?: Partial<ThemeSettings>;
+      logoUrl?: string | null;
+    },
+  ) {
+    const store = await this.stores.updateThemeSettings(storeId, req.user, {
+      themeId: body.themeId,
+      themeSettings: body.themeSettings,
+      logoUrl: body.logoUrl,
+    });
     return { store };
   }
 
