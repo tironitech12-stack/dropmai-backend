@@ -5,6 +5,7 @@ import type { SessionUser } from '../auth/auth.types';
 import {
   THEME_CATALOG,
   buildDefaultSettings,
+  ensureAddedThemeIds,
   getThemeDefinition,
   isKnownThemeId,
   mergeThemeSettings,
@@ -34,7 +35,10 @@ export class StoresService {
   private seed(user: SessionUser) {
     if (this.memory.size > 0) return;
     const themeId = 'vitrine';
-    const themeSettings = buildDefaultSettings(themeId, 'Minha Loja Demo');
+    const themeSettings = ensureAddedThemeIds(
+      buildDefaultSettings(themeId, 'Minha Loja Demo'),
+      themeId,
+    );
     this.memory.set('store-demo-1', {
       id: 'store-demo-1',
       slug: 'minhaloja',
@@ -77,7 +81,7 @@ export class StoresService {
       input.name,
       input.logoUrl ?? null,
     );
-    const themeSettings = mergeThemeSettings(
+    let themeSettings = mergeThemeSettings(
       defaults,
       (input.themeSettings as ThemeSettings) ?? null,
     );
@@ -85,6 +89,7 @@ export class StoresService {
     if (input.logoUrl && !themeSettings.brand.logoUrl) {
       themeSettings.brand.logoUrl = input.logoUrl;
     }
+    themeSettings = ensureAddedThemeIds(themeSettings, themeId);
     return {
       id: input.id,
       slug: input.slug,
@@ -138,7 +143,10 @@ export class StoresService {
     }
 
     const themeId = 'vitrine';
-    const themeSettings = buildDefaultSettings(themeId, input.name.trim());
+    const themeSettings = ensureAddedThemeIds(
+      buildDefaultSettings(themeId, input.name.trim()),
+      themeId,
+    );
 
     if (!isDatabaseConfigured()) {
       this.seed(user);
@@ -248,11 +256,16 @@ export class StoresService {
     const nextDefaults = buildDefaultSettings(themeId, store.name, store.logoUrl);
     // Drop previous Puck layout so the new theme defaults take over.
     delete nextDefaults.puck;
-    const themeSettings = keepCustomBrand
+    let themeSettings = keepCustomBrand
       ? mergeThemeSettings(nextDefaults, {
           brand: store.themeSettings.brand,
         })
       : nextDefaults;
+    themeSettings = ensureAddedThemeIds(
+      themeSettings,
+      themeId,
+      store.themeSettings.addedThemeIds ?? [],
+    );
 
     return this.persistTheme(storeId, user, themeId, themeSettings);
   }
@@ -284,7 +297,13 @@ export class StoresService {
     }
     if (!merged.brand.name) merged.brand.name = store.name;
 
-    return this.persistTheme(storeId, user, themeId, merged);
+    const withLibrary = ensureAddedThemeIds(
+      merged,
+      themeId,
+      store.themeSettings.addedThemeIds ?? [],
+    );
+
+    return this.persistTheme(storeId, user, themeId, withLibrary);
   }
 
   private async persistTheme(

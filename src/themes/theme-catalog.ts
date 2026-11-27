@@ -32,6 +32,8 @@ export type ThemeSettings = {
   home: {
     sections: ThemeSection[];
   };
+  /** Theme ids added to this store's library (active = Store.themeId). */
+  addedThemeIds?: string[];
   /** Puck visual editor page JSON */
   puck?: unknown;
 };
@@ -1013,5 +1015,29 @@ export function mergeThemeSettings(
   if ('puck' in p) {
     next.puck = (p as ThemeSettings).puck;
   }
+  if (Array.isArray(p.addedThemeIds)) {
+    const ids = p.addedThemeIds
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+    next.addedThemeIds = [...new Set(ids)];
+  }
+  return next;
+}
+
+/** Ensure themeId is tracked in the store library. */
+export function ensureAddedThemeIds(
+  settings: ThemeSettings,
+  themeId: string,
+  extra: string[] = [],
+): ThemeSettings {
+  const next = structuredClone(settings);
+  const ids = [
+    ...(Array.isArray(next.addedThemeIds) ? next.addedThemeIds : []),
+    ...extra,
+    themeId,
+  ]
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+  next.addedThemeIds = [...new Set(ids)];
   return next;
 }
