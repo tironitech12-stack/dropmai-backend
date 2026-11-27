@@ -81,18 +81,19 @@ export class SuppliersController {
   /** Merchant panel: Xnamai catalog with stock/category filters + destaques. */
   @Get('suppliers/xnamai/products')
   @UseGuards(AuthGuard)
-  listXnamaiProducts(
+  async listXnamaiProducts(
     @Query('inStock') inStock?: string,
     @Query('limit') limit?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('categoryId') categoryId?: string,
     @Query('q') q?: string,
+    @Res({ passthrough: true }) res?: Response,
   ) {
     const parsedLimit = limit ? Number(limit) : undefined;
     const parsedPage = page ? Number(page) : undefined;
     const parsedPageSize = pageSize ? Number(pageSize) : undefined;
-    return this.suppliers.listXnamaiProducts({
+    const payload = await this.suppliers.listXnamaiProducts({
       inStock:
         inStock === undefined ? true : inStock !== 'false' && inStock !== '0',
       limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
@@ -101,6 +102,19 @@ export class SuppliersController {
       categoryId,
       q,
     });
+    if (res?.setHeader) {
+      res.setHeader(
+        'X-Dropmai-Cache',
+        payload.cache === 'HIT' ? 'HIT' : 'MISS',
+      );
+      if (typeof payload.timingMs === 'number') {
+        res.setHeader(
+          'Server-Timing',
+          `xnamai;dur=${payload.timingMs};desc="${payload.cache || 'MISS'}"`,
+        );
+      }
+    }
+    return payload;
   }
 
   @Get('suppliers/xnamai/categories')

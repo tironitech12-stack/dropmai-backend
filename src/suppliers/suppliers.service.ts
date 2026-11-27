@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import { isDatabaseConfigured, PrismaService } from '../prisma/prisma.service';
 import { MOCK_XNAMAI_PRODUCTS } from './mock-catalog';
 import {
-  invalidateStorefrontImageCache,
+  applyCachedStorefrontImages,
   isPreCadastroTitle,
   normalizeCatalogImageUrl,
   resolveStorefrontImageUrl,
@@ -43,6 +43,13 @@ export class SuppliersService {
       }
     | null = null;
   private readonly liveCacheTtlMs = 5 * 60 * 1000;
+
+  /** Short TTL for assembled list responses (page + filters). */
+  private readonly listResponseCache = new Map<
+    string,
+    { at: number; payload: Record<string, unknown> }
+  >();
+  private readonly listResponseTtlMs = 45_000;
 
   constructor(private readonly prisma: PrismaService) {
     for (const p of MOCK_XNAMAI_PRODUCTS) {
@@ -165,8 +172,88 @@ export class SuppliersService {
   /**
    * List Xnamai supplier products for the merchant panel.
    * Live path: Mercos adaptor (paginated) → BI analytics → mock only if unreachable.
+   * Response cache (45s) + warm image cache avoid re-scraping on every SSR.
    */
+  private listCacheKey(options?: {
+    inStock?: boolean;
+    limit?: number;
+    page?: number;
+    pageSize?: number;
+    categoryId?: string;
+    q?: string;
+    forceMock?: boolean;
+  }): string {
+    return JSON.stringify({
+      inStock: options?.inStock !== false,
+      page: Math.max(options?.page ?? 1, 1),
+      pageSize: Math.min(
+        Math.max(options?.pageSize ?? options?.limit ?? 24, 1),
+        60,
+      ),
+      categoryId: options?.categoryId?.trim() || '',
+      q: options?.q?.trim().toLowerCase() || '',
+      forceMock: Boolean(options?.forceMock),
+    });
+  }
+
+  private clearListResponseCache() {
+    this.listResponseCache.clear();
+  }
+
   async listXnamaiProducts(options?: {
+    inStock?: boolean;
+    limit?: number;
+    page?: number;
+    pageSize?: number;
+    categoryId?: string;
+    q?: string;
+    forceMock?: boolean;
+  }): Promise<{
+    products: CatalogDto[];
+    featured: CatalogDto[];
+    categories: Array<{ id: string; name: string; parentId: string | null; count: number }>;
+    mode: 'live' | 'mock' | 'db';
+    source: string;
+    inStock: boolean;
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+    warning?: string;
+    imageGaps?: { pageMissingCdn: number; note: string };
+    cache?: 'HIT' | 'MISS';
+    timingMs?: number;
+  }> {
+    const started = Date.now();
+    const cacheKey = this.listCacheKey(options);
+    const hit = this.listResponseCache.get(cacheKey);
+    if (
+      hit &&
+      Date.now() - hit.at < this.listResponseTtlMs &&
+      !options?.forceMock
+    ) {
+      return {
+        ...(hit.payload as Awaited<
+          ReturnType<SuppliersService['buildXnamaiProductList']>
+        >),
+        cache: 'HIT',
+        timingMs: Date.now() - started,
+      };
+    }
+
+    const payload = await this.buildXnamaiProductList(options);
+    this.listResponseCache.set(cacheKey, {
+      at: Date.now(),
+      payload: payload as unknown as Record<string, unknown>,
+    });
+    return {
+      ...payload,
+      cache: 'MISS',
+      timingMs: Date.now() - started,
+    };
+  }
+
+  private async buildXnamaiProductList(options?: {
     inStock?: boolean;
     limit?: number;
     page?: number;
@@ -301,29 +388,26 @@ export class SuppliersService {
         return url ? { ...p, imageUrl: url } : p;
       });
 
-    // Photo-first page: resolve B2B CDN for this window (+ extras to fill gaps).
-    // Skip HTML scrape here; keep a hard deadline so SSR stays usable.
-    // Drop any prior CDN already attached from looser matchers — re-resolve.
-    let windowItems = products
-      .slice(start, start + pageSize * 3)
-      .map((p) =>
-        p.imageUrl?.includes('arquivos.mercos.com')
-          ? { ...p, imageUrl: null as string | null }
-          : p,
-      );
+    // Photo-first page: reuse warm CDN cache; only resolve missing thumbs.
+    // Do NOT invalidate on every list — that forced 14s+8s of B2B work each SSR.
+    let windowItems = products.slice(start, start + pageSize * 3);
     if (mode !== 'mock' && windowItems.length) {
-      // Force re-resolve for this window so wrong CDN cache cannot stick.
-      for (const p of windowItems) {
-        invalidateStorefrontImageCache(p.externalId || p.id);
-      }
+      const hints = windowItems
+        .filter((p) => !isPreCadastroTitle(p.title))
+        .map(hintFor);
+      const warm = applyCachedStorefrontImages(hints);
+      windowItems = applyResolved(windowItems, warm);
 
-      const need = windowItems
-        .filter((p) => !isPreCadastroTitle(p.title));
+      const need = windowItems.filter(
+        (p) =>
+          !isPreCadastroTitle(p.title) &&
+          !(p.imageUrl && p.imageUrl.includes('arquivos.mercos.com')),
+      );
       if (need.length) {
         try {
           const resolved = await resolveStorefrontImageUrls(
             need.map(hintFor),
-            { concurrency: 12, mode: 'fast', deadlineMs: 14_000 },
+            { concurrency: 12, mode: 'fast', deadlineMs: 6_000 },
           );
           windowItems = applyResolved(windowItems, resolved);
         } catch (err) {
@@ -352,7 +436,7 @@ export class SuppliersService {
     ];
     let pageItems = photoFirst.slice(0, pageSize);
 
-    // If still short on CDN cards, keep scanning further (bounded).
+    // If still short on CDN cards, keep scanning further (bounded, short deadline).
     if (
       mode !== 'mock' &&
       pageItems.filter(withCdnNow).length < Math.min(pageSize, 12)
@@ -360,20 +444,32 @@ export class SuppliersService {
       const extra = products.slice(start + pageSize * 3, start + pageSize * 6);
       if (extra.length) {
         try {
-          const resolved = await resolveStorefrontImageUrls(
-            extra
-              .filter((p) => !isPreCadastroTitle(p.title))
-              .map(hintFor),
-            { concurrency: 12, mode: 'fast', deadlineMs: 8_000 },
+          const warmExtra = applyCachedStorefrontImages(
+            extra.filter((p) => !isPreCadastroTitle(p.title)).map(hintFor),
           );
-          const enriched = applyResolved(extra, resolved).filter(withCdnNow);
+          let enriched = applyResolved(extra, warmExtra).filter(withCdnNow);
+          const stillNeed = extra.filter(
+            (p) =>
+              !isPreCadastroTitle(p.title) &&
+              !warmExtra.has(p.externalId) &&
+              !warmExtra.has(p.id),
+          );
+          if (stillNeed.length && enriched.length < pageSize) {
+            const resolved = await resolveStorefrontImageUrls(
+              stillNeed.map(hintFor),
+              { concurrency: 12, mode: 'fast', deadlineMs: 4_000 },
+            );
+            enriched = [
+              ...enriched,
+              ...applyResolved(stillNeed, resolved).filter(withCdnNow),
+            ];
+          }
           const seen = new Set(pageItems.map((p) => p.id));
           for (const p of enriched) {
             if (seen.has(p.id)) continue;
-            // Replace trailing non-CDN slots first.
-            const idx = pageItems.findIndex((x) => !withCdnNow(x));
-            if (idx >= 0) {
-              pageItems[idx] = p;
+            const swapIdx = pageItems.findIndex((x) => !withCdnNow(x));
+            if (swapIdx >= 0) {
+              pageItems[swapIdx] = p;
               seen.add(p.id);
             } else if (pageItems.length < pageSize) {
               pageItems.push(p);
@@ -386,19 +482,6 @@ export class SuppliersService {
         }
       }
     }
-
-    // Emit CDN only. After strict resolve, missing/wrong-color → null (blank
-    // tile) — never a proxy/SVG that could imply a photo exists.
-    pageItems = pageItems.map((p) => {
-      const raw = (p.imageUrl ?? '').trim();
-      if (/^https:\/\/arquivos\.mercos\.com\//i.test(raw)) {
-        return { ...p, imageHashes: [], imageUrl: raw };
-      }
-      if (/^https:\/\/thumbnails\.meuspedidos\.com\.br\//i.test(raw)) {
-        return { ...p, imageHashes: [], imageUrl: raw };
-      }
-      return { ...p, imageHashes: [], imageUrl: null };
-    });
 
     const withCdn = withCdnNow;
 
@@ -491,6 +574,10 @@ export class SuppliersService {
     limit?: number;
     forceMock?: boolean;
   }): Promise<SupplierSyncResult> {
+    // Fresh sync invalidates assembled list pages + live BI snapshot.
+    this.liveCache = null;
+    this.clearListResponseCache();
+
     const adapter = new XnamaiCatalogAdapter({ forceMock: options?.forceMock });
     const fetched = await adapter.fetchProducts({ limit: options?.limit ?? 200 });
 
