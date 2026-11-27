@@ -6,6 +6,7 @@ import {
   THEME_CATALOG,
   buildDefaultSettings,
   getThemeDefinition,
+  isKnownThemeId,
   mergeThemeSettings,
   type ThemeSettings,
 } from '../themes/theme-catalog';
@@ -107,6 +108,7 @@ export class StoresService {
       tagline: t.tagline,
       free: t.free,
       previewAccent: t.previewAccent,
+      previewAccent2: t.previewAccent2 ?? t.previewAccent,
       defaultSettings: t.defaultSettings,
     }));
   }
@@ -238,13 +240,17 @@ export class StoresService {
   ): Promise<StoreSummary> {
     const store = await this.getById(storeId, user);
     if (!store) throw new BadRequestException('Loja não encontrada');
-    getThemeDefinition(themeId); // validates known id via fallback
+    if (!isKnownThemeId(themeId)) {
+      throw new BadRequestException('Tema inválido');
+    }
+    getThemeDefinition(themeId);
 
     const nextDefaults = buildDefaultSettings(themeId, store.name, store.logoUrl);
+    // Drop previous Puck layout so the new theme defaults take over.
+    delete nextDefaults.puck;
     const themeSettings = keepCustomBrand
       ? mergeThemeSettings(nextDefaults, {
           brand: store.themeSettings.brand,
-          // keep colors/typography from new theme; brand stays
         })
       : nextDefaults;
 
