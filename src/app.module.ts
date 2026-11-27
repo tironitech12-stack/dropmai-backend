@@ -7,12 +7,14 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { StoresModule } from './stores/stores.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
+import { ThemesModule } from './themes/themes.module';
 
 @Module({
   imports: [
     PrismaModule,
     AuthModule,
     StoresModule,
+    ThemesModule,
     ProductsModule,
     DomainsModule,
     MarketplaceModule,

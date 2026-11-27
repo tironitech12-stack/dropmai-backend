@@ -18,11 +18,6 @@ import { StoresService } from './stores.service';
 export class StoresController {
   constructor(private readonly stores: StoresService) {}
 
-  @Get('themes')
-  listThemes() {
-    return { themes: this.stores.listThemes() };
-  }
-
   @Get('stores')
   @UseGuards(AuthGuard)
   list(@Req() req: { user: SessionUser }) {
