@@ -327,6 +327,123 @@ export const THEME_CATALOG: ThemeDefinition[] = [
       },
     },
   },
+  {
+    id: 'impeto',
+    name: 'Ímpeto',
+    tagline: 'Beleza e lifestyle bold — hero overlay e marca no centro.',
+    free: true,
+    previewAccent: '#111111',
+    previewAccent2: '#f5f5f5',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'ESSÊNCIA',
+      },
+      colors: {
+        primary: '#111111',
+        secondary: '#404040',
+        background: '#fafafa',
+        surface: '#ffffff',
+        text: '#0a0a0a',
+        muted: '#737373',
+      },
+      typography: {
+        heading: 'ui-sans-serif, system-ui, sans-serif',
+        body: 'ui-sans-serif, system-ui, sans-serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'PELE VIVA,',
+          heroSubtitle:
+            'Curadoria bold para beleza e lifestyle com presença.',
+          announcement: 'Leve 3 e ganhe 20% · Shop now',
+          featuredTitle: 'Em cena',
+          featuredLimit: 8,
+          ctaLabel: 'Explorar',
+          footerText: 'Ímpeto · Dropmai',
+        }),
+      },
+    },
+  },
+  {
+    id: 'trilha',
+    name: 'Trilha',
+    tagline: 'Outdoor e performance — cards amplos e foto em evidência.',
+    free: true,
+    previewAccent: '#171717',
+    previewAccent2: '#dc2626',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'Performance',
+      },
+      colors: {
+        primary: '#171717',
+        secondary: '#dc2626',
+        background: '#f5f5f5',
+        surface: '#ffffff',
+        text: '#0a0a0a',
+        muted: '#525252',
+      },
+      typography: {
+        heading: 'ui-sans-serif, system-ui, sans-serif',
+        body: 'system-ui, -apple-system, Segoe UI, sans-serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'Pronto pra trilha',
+          heroSubtitle:
+            'Layout de outdoor: cards arredondados e foco na foto do produto.',
+          announcement: 'Frete sob demanda · Peças em movimento',
+          featuredTitle: 'Bikes & gear',
+          featuredLimit: 8,
+          ctaLabel: 'Ver coleção',
+          footerText: 'Trilha · Dropmai',
+        }),
+      },
+    },
+  },
+  {
+    id: 'prateleira',
+    name: 'Prateleira',
+    tagline: 'Catálogo grande — benefícios, cupom e grade densa.',
+    free: true,
+    previewAccent: '#f97316',
+    previewAccent2: '#0f172a',
+    defaultSettings: {
+      brand: {
+        name: '',
+        logoUrl: null,
+        tagline: 'Milhares de SKUs',
+      },
+      colors: {
+        primary: '#ea580c',
+        secondary: '#0f172a',
+        background: '#ffffff',
+        surface: '#f8fafc',
+        text: '#0f172a',
+        muted: '#64748b',
+      },
+      typography: {
+        heading: 'ui-sans-serif, system-ui, sans-serif',
+        body: 'ui-sans-serif, system-ui, sans-serif',
+      },
+      home: {
+        sections: baseSections({
+          heroTitle: 'Top specs. Preço justo.',
+          heroSubtitle:
+            'Varejo de catálogo grande: benefícios, cupom e grade densa.',
+          announcement: 'Frete sob demanda · Ajuda na compra · Aberto 7 dias',
+          featuredTitle: 'Mais vendidos',
+          featuredLimit: 24,
+          ctaLabel: 'Ver catálogo',
+          footerText: 'Prateleira · Dropmai',
+        }),
+      },
+    },
+  },
 ];
 
 export function isKnownThemeId(themeId: string): boolean {
